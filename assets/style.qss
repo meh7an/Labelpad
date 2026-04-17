@@ -1,0 +1,183 @@
+/* =========================================================
+   DICOM Labeling Pipeline — Application Stylesheet
+   Medical-grade dark UI
+   ========================================================= */
+
+/* --- Global ------------------------------------------------ */
+* {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+    color: #D4D8DE;
+}
+
+QMainWindow, QDialog, QWidget {
+    background-color: #0F1117;
+}
+
+/* --- Labels ----------------------------------------------- */
+QLabel {
+    color: #D4D8DE;
+    background: transparent;
+}
+
+QLabel#sectionHeader {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    color: #5A7FA8;
+    text-transform: uppercase;
+}
+
+/* --- Buttons ---------------------------------------------- */
+QPushButton {
+    background-color: #1C2333;
+    color: #D4D8DE;
+    border: 1px solid #2E3A50;
+    border-radius: 4px;
+    padding: 6px 16px;
+}
+
+QPushButton:hover {
+    background-color: #253047;
+    border-color: #4A7FB5;
+}
+
+QPushButton:pressed {
+    background-color: #1A2740;
+}
+
+QPushButton:disabled {
+    color: #3E4A5C;
+    border-color: #1E2530;
+}
+
+QPushButton#primaryButton {
+    background-color: #1F5FAD;
+    border-color: #2A7AD4;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+
+QPushButton#primaryButton:hover {
+    background-color: #2A7AD4;
+}
+
+QPushButton#primaryButton:pressed {
+    background-color: #174E90;
+}
+
+QPushButton#dangerButton {
+    background-color: #7A1F2E;
+    border-color: #A83040;
+    color: #FFFFFF;
+}
+
+QPushButton#dangerButton:hover {
+    background-color: #A83040;
+}
+
+/* --- List Widget ------------------------------------------ */
+QListWidget {
+    background-color: #0D1118;
+    border: 1px solid #1E2A3A;
+    border-radius: 4px;
+    outline: none;
+}
+
+QListWidget::item {
+    padding: 8px 12px;
+    border-bottom: 1px solid #141B27;
+}
+
+QListWidget::item:selected {
+    background-color: #1A3050;
+    color: #FFFFFF;
+    border-left: 3px solid #2A7AD4;
+}
+
+QListWidget::item:hover:!selected {
+    background-color: #141D2E;
+}
+
+/* --- Sliders ---------------------------------------------- */
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #1E2A3A;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background: #2A7AD4;
+    border: 2px solid #1F5FAD;
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #4A9AEF;
+}
+
+QSlider::sub-page:horizontal {
+    background: #1F5FAD;
+    border-radius: 2px;
+}
+
+/* --- Scroll Bars ------------------------------------------ */
+QScrollBar:vertical {
+    background: #0D1118;
+    width: 8px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical {
+    background: #2E3A50;
+    border-radius: 4px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #4A7FB5;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+/* --- Status Bar ------------------------------------------- */
+QStatusBar {
+    background-color: #080D14;
+    color: #5A7FA8;
+    border-top: 1px solid #1E2A3A;
+    font-size: 11px;
+}
+
+/* --- Separators ------------------------------------------- */
+QFrame[frameShape="4"],
+QFrame[frameShape="5"] {
+    color: #1E2A3A;
+}
+
+/* --- Tool Tips -------------------------------------------- */
+QToolTip {
+    background-color: #1C2333;
+    color: #D4D8DE;
+    border: 1px solid #2E3A50;
+    border-radius: 3px;
+    padding: 4px 8px;
+}
+
+/* --- Spin Box --------------------------------------------- */
+QSpinBox, QDoubleSpinBox {
+    background-color: #0D1118;
+    border: 1px solid #2E3A50;
+    border-radius: 4px;
+    padding: 3px 6px;
+    color: #D4D8DE;
+}
+
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: #2A7AD4;
+}

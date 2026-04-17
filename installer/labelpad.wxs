@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  installer/labelpad.wxs
+  WiX Toolset source file -- produces Labelpad.msi
+  Wraps the PyInstaller dist/Labelpad/ folder into a proper Windows MSI.
+  Built by GitHub Actions (see .github/workflows/build.yml).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Labelpad"
+    Version="1.0.0"
+    Manufacturer="Labelpad"
+    UpgradeCode="8F3A1B2C-4D5E-6F7A-8B9C-0D1E2F3A4B5C"
+    Language="1033"
+    Codepage="1252"
+    InstallerVersion="500"
+    Scope="perMachine">
+
+    <!-- Allow clean upgrades -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Labelpad is already installed." />
+
+    <!-- Media / compression -->
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- ----------------------------------------------------------------
+         Directory structure
+    ---------------------------------------------------------------- -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Labelpad" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Labelpad" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
+    <!-- ----------------------------------------------------------------
+         Main feature: all PyInstaller output files
+         The harvest tool (wix harvest) auto-generates the file list
+         from dist/Labelpad/ -- see build.yml for how this is invoked.
+    ---------------------------------------------------------------- -->
+    <Feature Id="MainFeature" Title="Labelpad" Level="1">
+      <ComponentGroupRef Id="LabelpadFiles" />
+      <ComponentRef Id="ApplicationShortcutStartMenu" />
+      <ComponentRef Id="ApplicationShortcutDesktop" />
+    </Feature>
+
+    <!-- ----------------------------------------------------------------
+         Start Menu shortcut
+    ---------------------------------------------------------------- -->
+    <Component Id="ApplicationShortcutStartMenu"
+               Directory="ApplicationProgramsFolder"
+               Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
+      <Shortcut Id="StartMenuShortcut"
+                Name="Labelpad"
+                Description="DICOM Labeling Tool"
+                Target="[INSTALLFOLDER]Labelpad.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="CleanupStartMenu"
+                    Directory="ApplicationProgramsFolder"
+                    On="uninstall" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\Labelpad"
+                     Name="StartMenuInstalled"
+                     Type="integer" Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+    <!-- ----------------------------------------------------------------
+         Desktop shortcut
+    ---------------------------------------------------------------- -->
+    <Component Id="ApplicationShortcutDesktop"
+               Directory="DesktopFolder"
+               Guid="B2C3D4E5-F6A7-8901-BCDE-F12345678901">
+      <Shortcut Id="DesktopShortcut"
+                Name="Labelpad"
+                Description="DICOM Labeling Tool"
+                Target="[INSTALLFOLDER]Labelpad.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\Labelpad"
+                     Name="DesktopInstalled"
+                     Type="integer" Value="1"
+                     KeyPath="yes" />
+    </Component>
+
+  </Package>
+</Wix>
