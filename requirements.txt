@@ -1,0 +1,6 @@
+pydicom==2.4.5
+numpy==2.4.4
+Pillow==12.2.0
+PyQt5==5.15.11
+labelme==6.1.0
+pytest==9.0.3

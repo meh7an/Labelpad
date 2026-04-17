@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# PyInstaller build artifacts
+build/
+dist/
+
+# NSIS / installer output
+installer_output/
+
+# macOS
+.DS_Store

@@ -1,0 +1,74 @@
+name: Build Labelpad
+
+on:
+    push:
+        tags:
+            - "v*"
+    workflow_dispatch:
+
+jobs:
+    build-windows:
+        runs-on: windows-latest
+        permissions:
+            contents: write
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Set up Python 3.12
+              uses: actions/setup-python@v5
+              with:
+                  python-version: "3.12"
+
+            - name: Install Python dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install -r requirements.txt
+                  pip install pyinstaller==6.6.0
+
+            - name: Build EXE with PyInstaller
+              run: pyinstaller labeler.spec --clean --noconfirm
+
+            - name: Show dist contents
+              run: |
+                  Write-Host "=== dist\ ==="
+                  Get-ChildItem -Recurse dist\ | Select-Object FullName | Format-Table -AutoSize
+
+            - name: Install NSIS
+              run: choco install nsis --yes --no-progress
+
+            - name: Create output directory
+              run: New-Item -ItemType Directory -Force -Path installer_output
+
+            - name: Build installer with NSIS
+              run: |
+                  $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+                  if (-not (Test-Path $makensis)) {
+                    $makensis = "C:\Program Files\NSIS\makensis.exe"
+                  }
+                  $distPath = (Get-Item "dist").FullName
+                  $dirs = Get-ChildItem -Path $distPath -Directory
+                  if ($dirs.Count -eq 0) {
+                    Write-Error "No subdirectory found in dist\ — PyInstaller output missing."
+                    exit 1
+                  }
+                  $appDir = $dirs[0].FullName
+                  Write-Host "Using dist folder: $appDir"
+                  & $makensis /DDIST_PATH="$appDir" installer\labelpad.nsi
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            - name: Zip portable EXE
+              run: |
+                  $distPath = (Get-ChildItem -Path dist -Directory)[0].FullName
+                  Compress-Archive -Path "$distPath\*" `
+                    -DestinationPath installer_output\Labelpad_v1.0.0_portable.zip
+
+            - name: Upload to GitHub Release
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: |
+                      installer_output/Labelpad_v1.0.0_setup.exe
+                      installer_output/Labelpad_v1.0.0_portable.zip
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
