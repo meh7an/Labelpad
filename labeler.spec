@@ -1,16 +1,21 @@
-# labeler.spec
-# PyInstaller spec -- produces dist/Labelpad/Labelpad.exe
-
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
+import sys
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
+IS_MAC = sys.platform == "darwin"
+IS_WIN = sys.platform == "win32"
 
-# Collect everything from these packages -- data, binaries, and submodules
 pydicom_datas,  pydicom_bins,  pydicom_hiddens  = collect_all("pydicom")
 labelme_datas,  labelme_bins,  labelme_hiddens  = collect_all("labelme")
 numpy_datas,    numpy_bins,    numpy_hiddens    = collect_all("numpy")
 PIL_datas,      PIL_bins,      PIL_hiddens      = collect_all("PIL")
-pyqt5_datas,    pyqt5_bins,    pyqt5_hiddens    = collect_all("PyQt5")
+
+# Do NOT use collect_all for PyQt5 — PyInstaller's built-in hooks already
+# collect all PyQt5 binaries and datas automatically. Calling collect_all
+# on top of that causes every Qt5 framework to be registered twice, which
+# produces duplicate symlink conflicts during COLLECT on macOS.
+# collect_submodules is enough to surface any dynamically-imported modules.
+pyqt5_hiddens = collect_submodules("PyQt5")
 
 a = Analysis(
     ["main.py"],
@@ -20,7 +25,6 @@ a = Analysis(
         *labelme_bins,
         *numpy_bins,
         *PIL_bins,
-        *pyqt5_bins,
     ],
     datas=[
         ("assets/style.qss", "assets"),
@@ -28,7 +32,6 @@ a = Analysis(
         *labelme_datas,
         *numpy_datas,
         *PIL_datas,
-        *pyqt5_datas,
     ],
     hiddenimports=[
         *pydicom_hiddens,
@@ -57,9 +60,9 @@ exe = EXE(
     name="Labelpad",
     debug=False,
     strip=False,
-    upx=True,
+    upx=IS_WIN,          # UPX is unreliable on macOS arm64
     console=False,
-    icon="assets/icon.ico",
+    icon="assets/icon.ico" if IS_WIN else "assets/icon.icns",
 )
 
 coll = COLLECT(
@@ -68,7 +71,19 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=IS_WIN,
     upx_exclude=[],
     name="Labelpad",
 )
+
+if IS_MAC:
+    app = BUNDLE(
+        coll,
+        name="Labelpad.app",
+        icon="assets/icon.icns",
+        bundle_identifier="com.labelpad.app",
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "CFBundleShortVersionString": "1.0.0",
+        },
+    )
