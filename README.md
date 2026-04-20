@@ -10,6 +10,15 @@ Labelpad bridges the gap between raw DICOM files and annotation tools. It provid
 
 ---
 
+<table>
+    <tr>
+        <td><img width="1392" height="964" alt="Screenshot 2026-04-20 at 08 50 47" src="https://github.com/user-attachments/assets/56a37a86-65b0-41e7-a9b7-d4dfe3d5f3d6" /></td>
+        <td><img width="1212" height="924" alt="Screenshot 2026-04-20 at 08 54 08" src="https://github.com/user-attachments/assets/b05e6fda-0c88-4f0c-b8a5-69dffdb3e408" /></td>
+    </tr>
+</table>
+
+---
+
 ## Features
 
 - DICOM file browser with per-file status tracking (`Unlabeled`, `Raster Ready`, `Labeled`)
