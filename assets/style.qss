@@ -1,6 +1,6 @@
 /* =========================================================
    DICOM Labeling Pipeline — Application Stylesheet
-   Medical-grade dark UI
+   Medical-grade dark UI  |  Fusion style renderer required
    ========================================================= */
 
 /* --- Global ------------------------------------------------ */
@@ -28,29 +28,50 @@ QLabel#sectionHeader {
     text-transform: uppercase;
 }
 
-/* --- Buttons ---------------------------------------------- */
+/* --- Buttons ----------------------------------------------
+   All states carry an explicit color so Fusion never falls
+   back to the platform palette (which is black on Windows).
+   --------------------------------------------------------- */
 QPushButton {
     background-color: #1C2333;
     color: #D4D8DE;
     border: 1px solid #2E3A50;
     border-radius: 4px;
-    padding: 6px 16px;
+    padding: 4px 16px 8px 16px;
+    outline: none;
 }
 
 QPushButton:hover {
     background-color: #253047;
+    color: #FFFFFF;
     border-color: #4A7FB5;
 }
 
 QPushButton:pressed {
     background-color: #1A2740;
+    color: #FFFFFF;
+}
+
+QPushButton:focus {
+    border-color: #2A7AD4;
+    color: #D4D8DE;
 }
 
 QPushButton:disabled {
+    background-color: #141B27;
     color: #3E4A5C;
     border-color: #1E2530;
 }
 
+QPushButton:enabled {
+    color: #D4D8DE;
+}
+
+QPushButton:enabled:hover {
+    color: #FFFFFF;
+}
+
+/* Primary action */
 QPushButton#primaryButton {
     background-color: #1F5FAD;
     border-color: #2A7AD4;
@@ -60,12 +81,39 @@ QPushButton#primaryButton {
 
 QPushButton#primaryButton:hover {
     background-color: #2A7AD4;
+    color: #FFFFFF;
 }
 
 QPushButton#primaryButton:pressed {
     background-color: #174E90;
+    color: #FFFFFF;
 }
 
+QPushButton#primaryButton:disabled {
+    background-color: #132540;
+    border-color: #1A3560;
+    color: #3E5A80;
+}
+
+/* Secondary / muted action (Refresh, etc.) */
+QPushButton#secondaryButton {
+    background-color: #1C2333;
+    border-color: #2E3A50;
+    color: #5A7FA8;
+    font-size: 11px;
+}
+
+QPushButton#secondaryButton:hover {
+    border-color: #4A7FB5;
+    color: #D4D8DE;
+}
+
+QPushButton#secondaryButton:pressed {
+    background-color: #1A2740;
+    color: #D4D8DE;
+}
+
+/* Danger */
 QPushButton#dangerButton {
     background-color: #7A1F2E;
     border-color: #A83040;
@@ -74,6 +122,30 @@ QPushButton#dangerButton {
 
 QPushButton#dangerButton:hover {
     background-color: #A83040;
+    color: #FFFFFF;
+}
+
+QPushButton#dangerButton:pressed {
+    background-color: #5A1020;
+    color: #FFFFFF;
+}
+
+/* Reset (neutral) */
+QPushButton#resetButton {
+    background-color: #1C2333;
+    border-color: #2E3A50;
+    color: #8A98AA;
+}
+
+QPushButton#resetButton:hover {
+    background-color: #253047;
+    border-color: #4A7FB5;
+    color: #D4D8DE;
+}
+
+QPushButton#resetButton:pressed {
+    background-color: #1A2740;
+    color: #D4D8DE;
 }
 
 /* --- List Widget ------------------------------------------ */
@@ -180,4 +252,44 @@ QSpinBox, QDoubleSpinBox {
 
 QSpinBox:focus, QDoubleSpinBox:focus {
     border-color: #2A7AD4;
+}
+
+QSpinBox::up-button, QDoubleSpinBox::up-button,
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    background-color: #1C2333;
+    border: none;
+    width: 16px;
+}
+
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background-color: #253047;
+}
+
+/* --- Progress Dialog -------------------------------------- */
+QProgressDialog {
+    background-color: #0F1117;
+}
+
+QProgressBar {
+    background-color: #0D1118;
+    border: 1px solid #2E3A50;
+    border-radius: 4px;
+    color: #D4D8DE;
+    text-align: center;
+}
+
+QProgressBar::chunk {
+    background-color: #1F5FAD;
+    border-radius: 3px;
+}
+
+/* --- Text Edit (traceback box) ---------------------------- */
+QTextEdit {
+    background-color: #080C12;
+    color: #5A7FA8;
+    border: 1px solid #1E2A3A;
+    border-radius: 4px;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 10px;
 }

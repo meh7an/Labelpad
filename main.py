@@ -4,6 +4,24 @@ Entry point -- bootstraps folder structure and launches the Qt application.
 """
 
 import sys
+
+# ---------------------------------------------------------------------------
+# Windows frozen subprocess sentinel
+# Must be checked before any other imports so that labelme can initialise
+# its own QApplication without conflicting with ours.
+# ---------------------------------------------------------------------------
+
+if "--_labelme_subprocess" in sys.argv:
+    idx = sys.argv.index("--_labelme_subprocess")
+    sys.argv = [sys.argv[0]] + sys.argv[idx + 1:]
+    from labelme.__main__ import main as _labelme_main
+    _labelme_main()
+    sys.exit(0)
+
+# ---------------------------------------------------------------------------
+# Normal imports (only reached when not running as labelme subprocess)
+# ---------------------------------------------------------------------------
+
 import logging
 from pathlib import Path
 
@@ -59,10 +77,7 @@ def _apply_dark_titlebar(window) -> None:
         DWMWA_USE_IMMERSIVE_DARK_MODE = 20
         value = ctypes.c_int(1)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            ctypes.byref(value),
-            ctypes.sizeof(value),
+            hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value),
         )
     except Exception as exc:
         logging.warning("Could not apply dark title bar: %s", exc)
@@ -76,14 +91,9 @@ def _apply_icon(window, icon) -> None:
 def _resolve_icon():
     """Return a QIcon from assets/icon.ico, works in both dev and PyInstaller."""
     from PyQt5.QtGui import QIcon
-    if getattr(sys, "frozen", False):
-        base = Path(sys._MEIPASS)
-    else:
-        base = Path(".")
+    base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(".")
     icon_path = base / "assets" / "icon.ico"
-    if icon_path.exists():
-        return QIcon(str(icon_path))
-    return QIcon()
+    return QIcon(str(icon_path)) if icon_path.exists() else QIcon()
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +110,47 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Labelpad")
     app.setOrganizationName("Labelpad")
+    from PyQt5.QtGui import QFontDatabase, QFont, QPalette, QColor
+    from PyQt5.QtWidgets import QProxyStyle, QStyle
+
+    # Load Google Sans from bundled font files.
+    _fonts_dir = (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(".")) / "assets" / "fonts"
+    for _ttf in _fonts_dir.glob("*.ttf"):
+        QFontDatabase.addApplicationFont(str(_ttf))
+
+    _font = QFont("Google Sans")
+    _font.setPixelSize(13)
+    _font.setHintingPreference(QFont.PreferFullHinting)
+    app.setFont(_font)
+
+    # Disable Qt's mnemonic (keyboard accelerator) processing globally so that
+    # a single '&' in button text is displayed as-is rather than being consumed
+    # as a shortcut prefix. Without this, "Confirm & Open" renders as "Confirm Open".
+    class _NoMnemonicStyle(QProxyStyle):
+        def styleHint(self, hint, option=None, widget=None, returnData=None):
+            if hint == QStyle.SH_UnderlineShortcut:
+                return 0
+            return super().styleHint(hint, option, widget, returnData)
+
+        def drawItemText(self, painter, rect, flags, pal, enabled, text, textRole=QPalette.NoRole):
+            # Replace '&&' with placeholder, strip mnemonic '&', restore '&',
+            # then collapse any double spaces left behind.
+            text = text.replace("&&", "\x00").replace("&", "").replace("\x00", "&").replace("  ", " ")
+            super().drawItemText(painter, rect, flags, pal, enabled, text, textRole)
+
+    app.setStyle(_NoMnemonicStyle("Fusion"))
+
+    # Force button/input text colors via palette so Windows Fusion never falls
+    # back to the system ButtonText role (which defaults to black on Windows).
+    palette = app.palette()
+    palette.setColor(QPalette.ButtonText,                    QColor("#D4D8DE"))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#3E4A5C"))
+    palette.setColor(QPalette.Text,                    QColor("#D4D8DE"))
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor("#3E4A5C"))
+    palette.setColor(QPalette.Base,                    QColor("#0D1118"))
+    palette.setColor(QPalette.WindowText,                    QColor("#D4D8DE"))
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#3E4A5C"))
+    app.setPalette(palette)
 
     app_icon = _resolve_icon()
     app.setWindowIcon(app_icon)
@@ -126,8 +177,8 @@ def main():
 
     try:
         window = MainWindow()
-        window.show()                       # show FIRST so winId() is valid
-        _apply_icon(window, app_icon)       # then apply icon
+        window.show()
+        _apply_icon(window, app_icon)
         _apply_dark_titlebar(window)
         install_exception_hook(lambda: window)
         return app.exec_()

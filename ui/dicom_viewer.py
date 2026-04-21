@@ -323,7 +323,7 @@ class DicomViewer(QDialog):
 
         layout.addStretch()
 
-        confirm_btn = QPushButton("Confirm & Open in LabelMe")
+        confirm_btn = QPushButton("Confirm and Open in LabelMe")
         confirm_btn.setObjectName("primaryButton")
         confirm_btn.setFixedHeight(44)
         confirm_btn.setCursor(Qt.PointingHandCursor)
