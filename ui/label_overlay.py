@@ -1,11 +1,12 @@
 """
 ui/label_overlay.py
-Reads a LabelMe JSON annotation file and draws polygon overlays
+Reads a LabelMe JSON annotation file and draws polygon and circle overlays
 onto a numpy RGB image array using Pillow only (no OpenCV dependency).
 """
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +38,8 @@ _POINT_RADIUS  = 6
 _FILL_ALPHA    = 60    # 0-255, polygon fill opacity
 _FONT_SIZE     = 28
 
+_SUPPORTED_SHAPE_TYPES = {"polygon", "circle"}
+
 
 # ---------------------------------------------------------------------------
 # imagePath resolution (M2)
@@ -46,23 +49,11 @@ def _resolve_image_path(raw_path: str, json_path: Path) -> Optional[Path]:
     """
     Resolve an imagePath string from a LabelMe annotation to an existing file.
 
-    LabelMe bakes an absolute path into its JSON at save time. After a pack
-    round-trip, that path may be stale (different machine) or relative
-    (./stem.jpg, the portable form written by create_pack). This function
-    tries both interpretations without raising.
-
     Resolution order:
     1. The path as-is — covers absolute paths valid on the current machine.
     2. Name-only resolution relative to the JSON's parent directory — covers
        both ./stem.jpg and any other relative form, regardless of prefix.
     3. None if neither candidate resolves to an existing file.
-
-    Args:
-        raw_path:  The imagePath string from the LabelMe JSON.
-        json_path: Path to the annotation .json file on disk.
-
-    Returns:
-        A Path that exists on disk, or None.
     """
     if not raw_path:
         return None
@@ -72,9 +63,6 @@ def _resolve_image_path(raw_path: str, json_path: Path) -> Optional[Path]:
     if candidate.is_absolute() and candidate.exists():
         return candidate
 
-    # Strip any directory prefix and look next to the annotation file.
-    # This handles both "./stem.jpg" (portable) and stale absolute paths
-    # whose basename still matches a sibling raster.
     sibling = (json_path.parent / candidate.name).resolve()
     if sibling.exists():
         return sibling
@@ -90,6 +78,12 @@ class LabelOverlay:
     """
     Holds all parsed shapes from a single LabelMe JSON file and renders
     them onto a numpy RGB uint8 array using Pillow.
+
+    Supported shape types:
+        - polygon  — arbitrary closed polygon.
+        - circle   — LabelMe encoding: points[0] = center,
+                     points[1] = any point on the circumference.
+                     Radius is derived as the Euclidean distance between them.
     """
 
     def __init__(
@@ -120,15 +114,12 @@ class LabelOverlay:
 
     @property
     def image_path(self) -> Optional[Path]:
-        """
-        Resolved path to the raster image associated with this annotation.
-
-        Returns an existing Path when resolution succeeded in load_label_overlay,
-        or None when the imagePath field was absent, empty, or unresolvable on
-        the current machine (e.g. stale path from a foreign machine whose pack
-        extraction patching failed).
-        """
         return self._image_path
+
+    @property
+    def color_map(self) -> dict:
+        """Returns a shallow copy of the label → RGB tuple mapping."""
+        return dict(self._color_map)
 
     # ------------------------------------------------------------------
     # Colour assignment
@@ -140,12 +131,95 @@ class LabelOverlay:
             self._color_map[label] = _PALETTE_RGB[i % len(_PALETTE_RGB)]
 
     # ------------------------------------------------------------------
-    # Rendering
+    # Shape-specific drawing helpers
+    # ------------------------------------------------------------------
+
+    def _draw_polygon(
+        self,
+        fill_draw: ImageDraw.ImageDraw,
+        top_draw: ImageDraw.ImageDraw,
+        pts: list,
+        color_fill: tuple,
+        color_outline: tuple,
+        font,
+        label: str,
+    ) -> None:
+        poly_pts = [tuple(p) for p in pts]
+
+        fill_draw.polygon(poly_pts, fill=color_fill)
+        top_draw.line(poly_pts + [poly_pts[0]], fill=color_outline, width=_OUTLINE_WIDTH)
+
+        for px, py in poly_pts:
+            r = _POINT_RADIUS
+            top_draw.ellipse(
+                [(px - r, py - r), (px + r, py + r)],
+                fill=color_outline,
+                outline=(0, 0, 0, 220),
+                width=2,
+            )
+
+        top_pt = min(pts, key=lambda p: p[1])
+        self._draw_label(top_draw, font, label, top_pt, color_outline)
+
+    def _draw_circle(
+        self,
+        fill_draw: ImageDraw.ImageDraw,
+        top_draw: ImageDraw.ImageDraw,
+        pts: list,
+        color_fill: tuple,
+        color_outline: tuple,
+        font,
+        label: str,
+    ) -> None:
+        """
+        LabelMe circle encoding:
+            pts[0] = (cx, cy)  — centre
+            pts[1] = (ex, ey)  — any point on the circumference
+        Radius = Euclidean distance between the two stored points.
+        """
+        if len(pts) < 2:
+            log.warning("Circle shape for label '%s' has fewer than 2 points; skipped.", label)
+            return
+
+        cx, cy = pts[0]
+        ex, ey = pts[1]
+        radius = math.hypot(ex - cx, ey - cy)
+
+        bbox = [
+            (cx - radius, cy - radius),
+            (cx + radius, cy + radius),
+        ]
+
+        fill_draw.ellipse(bbox, fill=color_fill)
+        top_draw.ellipse(bbox, outline=color_outline, width=_OUTLINE_WIDTH)
+
+        # Draw centre crosshair
+        ch = _POINT_RADIUS
+        top_draw.line([(cx - ch, cy), (cx + ch, cy)], fill=color_outline, width=3)
+        top_draw.line([(cx, cy - ch), (cx, cy + ch)], fill=color_outline, width=3)
+
+        self._draw_label(top_draw, font, label, (cx, cy - radius), color_outline)
+
+    @staticmethod
+    def _draw_label(
+        draw: ImageDraw.ImageDraw,
+        font,
+        label: str,
+        anchor_pt: tuple,
+        color_outline: tuple,
+    ) -> None:
+        tx = int(anchor_pt[0]) + 6
+        ty = int(anchor_pt[1]) - _FONT_SIZE - 6
+        draw.text((tx + 1, ty + 1), label, font=font, fill=(0, 0, 0, 220))
+        draw.text((tx, ty),          label, font=font, fill=color_outline)
+
+    # ------------------------------------------------------------------
+    # Main render entry point
     # ------------------------------------------------------------------
 
     def draw(self, rgb: np.ndarray) -> np.ndarray:
         """
-        Draw all polygon shapes onto a copy of rgb.
+        Draw all supported shapes onto a copy of rgb.
 
         Args:
             rgb: H x W x 3 uint8 numpy array (RGB).
@@ -153,14 +227,11 @@ class LabelOverlay:
         Returns:
             New H x W x 3 uint8 array with overlays painted on.
         """
-        # Base image
         base = Image.fromarray(rgb, mode="RGB")
 
-        # Separate RGBA layer for semi-transparent fills
         fill_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
         fill_draw  = ImageDraw.Draw(fill_layer)
 
-        # Outline + text drawn directly on an RGBA copy of base
         top_layer = base.convert("RGBA")
         top_draw  = ImageDraw.Draw(top_layer)
 
@@ -170,43 +241,27 @@ class LabelOverlay:
             font = ImageFont.load_default()
 
         for shape in self._shapes:
-            if shape.get("shape_type") != "polygon":
+            shape_type = shape.get("shape_type")
+            if shape_type not in _SUPPORTED_SHAPE_TYPES:
                 continue
 
-            label = shape["label"]
-            pts   = shape["points"]
-            color = self._color_map.get(label, (255, 255, 255))
+            label         = shape["label"]
+            pts           = shape["points"]
+            color         = self._color_map.get(label, (255, 255, 255))
             color_fill    = color + (_FILL_ALPHA,)
             color_outline = color + (220,)
 
-            # Convert points to flat tuple list for Pillow
-            poly_pts = [tuple(p) for p in pts]
-
-            # Semi-transparent fill
-            fill_draw.polygon(poly_pts, fill=color_fill)
-
-            # Solid outline
-            top_draw.line(poly_pts + [poly_pts[0]], fill=color_outline, width=_OUTLINE_WIDTH)
-
-            # Vertex points
-            for px, py in poly_pts:
-                r = _POINT_RADIUS
-                top_draw.ellipse(
-                    [(px - r, py - r), (px + r, py + r)],
-                    fill=color_outline,
-                    outline=(0, 0, 0, 220),
-                    width=2,
+            if shape_type == "polygon":
+                self._draw_polygon(
+                    fill_draw, top_draw, pts,
+                    color_fill, color_outline, font, label,
+                )
+            elif shape_type == "circle":
+                self._draw_circle(
+                    fill_draw, top_draw, pts,
+                    color_fill, color_outline, font, label,
                 )
 
-            top_pt = min(pts, key=lambda p: p[1])
-            tx = int(top_pt[0]) + 6
-            ty = int(top_pt[1]) - _FONT_SIZE - 6
-
-            # Shadow
-            top_draw.text((tx + 1, ty + 1), label, font=font, fill=(0, 0, 0, 220))
-            top_draw.text((tx, ty),          label, font=font, fill=color_outline)
-
-        # Composite: base → fill layer → outline/text layer
         base_rgba = base.convert("RGBA")
         base_rgba = Image.alpha_composite(base_rgba, fill_layer)
         base_rgba = Image.alpha_composite(base_rgba, top_layer)
@@ -225,13 +280,6 @@ def load_label_overlay(dcm_path: Path) -> Optional[LabelOverlay]:
 
     Handles labelme's optional numeric timestamp prefix:
         e.g. '1776400910652_<stem>.json'
-
-    The annotation's imagePath is resolved to an existing file via
-    _resolve_image_path() and stored on the returned LabelOverlay. If the
-    path cannot be resolved (stale absolute path from a foreign machine,
-    missing raster, or empty field), image_path will be None — this is
-    non-fatal because the overlay renderer operates on the DICOM pixel
-    data passed to draw(), not on the raster file.
     """
     stem = dcm_path.stem
 
@@ -251,8 +299,11 @@ def load_label_overlay(dcm_path: Path) -> Optional[LabelOverlay]:
         image_w = int(data.get("imageWidth",  0))
         image_h = int(data.get("imageHeight", 0))
 
-        polygon_shapes = [s for s in shapes if s.get("shape_type") == "polygon"]
-        if not polygon_shapes:
+        supported_shapes = [
+            s for s in shapes
+            if s.get("shape_type") in _SUPPORTED_SHAPE_TYPES
+        ]
+        if not supported_shapes:
             return None
 
         image_path_str = data.get("imagePath", "")
@@ -264,11 +315,17 @@ def load_label_overlay(dcm_path: Path) -> Optional[LabelOverlay]:
                 image_path_str, json_path.name,
             )
 
+        shape_summary = {
+            t: sum(1 for s in supported_shapes if s.get("shape_type") == t)
+            for t in _SUPPORTED_SHAPE_TYPES
+        }
         log.info(
-            "Loaded %d polygon(s) from '%s' (imagePath resolved=%s).",
-            len(polygon_shapes), json_path.name, resolved_path is not None,
+            "Loaded %s from '%s' (imagePath resolved=%s).",
+            ", ".join(f"{v} {k}(s)" for t, v in shape_summary.items() if (k := t) and v > 0),
+            json_path.name,
+            resolved_path is not None,
         )
-        return LabelOverlay(polygon_shapes, image_w, image_h, image_path=resolved_path)
+        return LabelOverlay(supported_shapes, image_w, image_h, image_path=resolved_path)
 
     except (KeyError, ValueError, json.JSONDecodeError) as exc:
         log.warning("Could not parse label JSON '%s': %s", json_path.name, exc)
