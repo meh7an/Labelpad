@@ -37,7 +37,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Callable
 
 import pyzipper
 
@@ -74,6 +74,9 @@ class DcmPackCorruptError(DcmPackError):
 
 class DcmPackVersionError(DcmPackError):
     """Manifest schema_version is not supported by this build."""
+
+class DcmPackCancelledError(DcmPackError):
+    """Operation was cancelled by the user before completion."""
 
 
 class LabelPatchError(DcmPackError):
@@ -407,24 +410,23 @@ def open_pack(path: Path, password: Optional[str] = None) -> pyzipper.AESZipFile
         raise DcmPackCorruptError(f"Pack file not found: {path}")
     return _open_zip(path, "r", password)
 
+_ProgressCB = Callable[[int, int], None]
 
 def extract_pack(
-    path: Path,
-    password: Optional[str] = None,
-    on_conflict: Literal["skip", "overwrite"] = "skip",
+    path:              Path,
+    password:          Optional[str]          = None,
+    on_conflict:       Literal["skip", "overwrite"] = "skip",
+    progress_callback: _ProgressCB | None     = None,
 ) -> ImportResult:
     """
     Extract a .dcmpack archive into the application's data directories.
 
-    After extraction, folder structure from the manifest is merged into the
-    local FolderStore via upsert_folder().  Only stems that were actually
-    imported are added to folders; skipped or failed stems are excluded.
-
     Args:
-        path:        Path to the .dcmpack file.
-        password:    Decryption password, or None for unprotected packs.
-        on_conflict: "skip" leaves existing files untouched;
-                     "overwrite" replaces them unconditionally.
+        path:              Path to the .dcmpack file.
+        password:          Decryption password, or None for unprotected packs.
+        on_conflict:       "skip" or "overwrite" for existing DCM files.
+        progress_callback: Optional callable(current_index, total_items)
+                           invoked just before each item is processed.
 
     Returns:
         ImportResult summarising imported / skipped / failed stems.
@@ -439,11 +441,14 @@ def extract_pack(
 
     with open_pack(path, password) as zf:
         manifest = read_manifest(zf)
+        total    = len(manifest.items)
         log.info(
             "Extracting pack '%s' (%d item(s), conflict=%s).",
-            manifest.pack_name, len(manifest.items), on_conflict,
+            manifest.pack_name, total, on_conflict,
         )
-        for item in manifest.items:
+        for idx, item in enumerate(manifest.items):
+            if progress_callback:
+                progress_callback(idx, total)
             try:
                 _extract_item(zf, item, on_conflict, result)
             except Exception as exc:
@@ -632,33 +637,28 @@ def _find_dicom_source(stem: str) -> Path | None:
 
 
 def create_pack(
-    stems:        list[str],
-    dest_path:    Path,
-    password:     Optional[str]          = None,
-    author:       str                    = "",
-    description:  str                    = "",
-    tags:         list[str] | None       = None,
-    pack_folders: list[PackFolder] | None = None,
+    stems:             list[str],
+    dest_path:         Path,
+    password:          Optional[str]             = None,
+    author:            str                       = "",
+    description:       str                       = "",
+    tags:              list[str] | None          = None,
+    pack_folders:      list[PackFolder] | None   = None,
+    progress_callback: _ProgressCB | None        = None,
 ) -> Path:
     """
     Bundle a list of DICOM stems into a new .dcmpack archive.
 
-    Labeled status is determined automatically: a stem is considered labeled
-    when LABELED_DIR/<stem>.json exists. All available assets for that stem
-    are collected from the four data directories.
-
-    The label annotation's imagePath is rewritten in-memory to the portable
-    relative form ./stem.jpg before bundling. The on-disk annotation in
-    Labeled/ is never modified. If patching fails (malformed JSON), the
-    original bytes are bundled as-is with a warning.
-
     Args:
-        stems:        File stems to include (e.g. ["brain_001", "ct_chest"]).
-        dest_path:    Destination .dcmpack path.
-        password:     Optional AES-256 encryption password.
-        pack_folders: Optional folder metadata to embed in the manifest.
-                      Each PackFolder's stems are filtered to only those
-                      present in the pack before bundling.
+        stems:             File stems to include.
+        dest_path:         Destination .dcmpack path.
+        password:          Optional AES-256 encryption password.
+        author:            Optional author string for the manifest.
+        description:       Optional description string for the manifest.
+        tags:              Optional list of tag strings.
+        pack_folders:      Optional folder metadata to embed in the manifest.
+        progress_callback: Optional callable(current_index, total_items)
+                           invoked just before each item is written.
 
     Returns:
         Resolved absolute path of the created archive.
@@ -680,7 +680,6 @@ def create_pack(
         items.append(DcmPackItem(stem=stem, labeled=labeled))
         sources.append(dcm_src)
 
-    # Filter pack_folders to stems actually being packed.
     stems_set = set(stems)
     filtered_folders: tuple[PackFolder, ...] = ()
     if pack_folders:
@@ -709,10 +708,13 @@ def create_pack(
     )
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
+    total = len(items)
 
     with _open_zip(dest_path, "w", password) as zf:
         _write_manifest(zf, manifest)
-        for item, dcm_src in zip(items, sources):
+        for idx, (item, dcm_src) in enumerate(zip(items, sources)):
+            if progress_callback:
+                progress_callback(idx, total)
             _add_member(zf, dcm_src, _dcm_arc_path(item.stem))
             if item.labeled:
                 _add_member(zf, _RASTER_DIR / f"{item.stem}.jpg",  _jpg_arc_path(item.stem))

@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread  
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QApplication,
@@ -37,6 +37,8 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +47,7 @@ from core.dcmpack import DcmPackError, create_pack
 from core.folder_store import FolderStore
 from core.paths import LABELED_DIR, UNLABELED_DIR
 from core.status import FileStatus, STATUS_COLORS, resolve_status
+from ui.workers import PackCreator 
 
 log = logging.getLogger(__name__)
 
@@ -183,6 +186,10 @@ class PackExportDialog(QDialog):
     Do not drive this dialog manually — open it via MainWindow._export_pack().
     After exec_() returns QDialog.Accepted, call created_path() to retrieve
     the path of the exported archive.
+
+    The dialog body is hosted inside a QScrollArea so the window remains
+    usable on monitors with limited vertical space. The button row is pinned
+    outside the scroll area and is always visible.
     """
 
     def __init__(
@@ -217,9 +224,14 @@ class PackExportDialog(QDialog):
         self.setWindowTitle("Export Pack")
         self.setModal(True)
         self.setMinimumWidth(560)
-        self.setMinimumHeight(580)
+        # Minimum height is intentionally kept short so the dialog fits on
+        # small monitors; the scroll area handles overflow vertically.
+        self.setMinimumHeight(320)
+        self.resize(560, 640)
+        self.setSizeGripEnabled(True)
         self.setStyleSheet(f"background-color: {_C_BG};")
 
+        # Root layout: accent bar | scroll area | divider | button row
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -230,11 +242,37 @@ class PackExportDialog(QDialog):
         bar.setStyleSheet(f"background-color: {_C_ACCENT};")
         root.addWidget(bar)
 
-        body = QVBoxLayout()
-        body.setContentsMargins(24, 20, 24, 20)
+        # --- Scrollable form body ---
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet(
+            # Transparent viewport so the dialog background shows through.
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+            f"QScrollBar:vertical {{"
+            f"  background: {_C_BG}; width: 8px; margin: 0;"
+            f"}}"
+            f"QScrollBar::handle:vertical {{"
+            f"  background: {_C_BORDER}; border-radius: 4px; min-height: 24px;"
+            f"}}"
+            f"QScrollBar::handle:vertical:hover {{ background: {_C_DIMMED}; }}"
+            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"
+        )
+
+        form_widget = QWidget()
+        form_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        form_widget.setStyleSheet("background: transparent;")
+        body = QVBoxLayout(form_widget)
+        body.setContentsMargins(24, 20, 24, 16)
         body.setSpacing(14)
 
-        # Title + description
+        scroll.setWidget(form_widget)
+        root.addWidget(scroll, stretch=1)
+
+        # --- Title + description ---
         title = QLabel("Export Pack")
         title.setStyleSheet(f"color: {_C_FG}; font-size: 14px; font-weight: 600;")
         body.addWidget(title)
@@ -253,7 +291,8 @@ class PackExportDialog(QDialog):
         body.addWidget(self._section_label("FILES"))
 
         self._file_list = QListWidget()
-        self._file_list.setMinimumHeight(200)
+        self._file_list.setMinimumHeight(160)
+        self._file_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._file_list.setStyleSheet(
             f"QListWidget {{"
             f"  background-color: {_C_INPUT}; border: 1px solid {_C_BORDER};"
@@ -428,10 +467,19 @@ class PackExportDialog(QDialog):
         self._error_label.setVisible(False)
         body.addWidget(self._error_label)
 
-        body.addWidget(self._divider())
+        # Push content to the top so it does not stretch on large windows.
+        body.addStretch()
 
-        # --- Button row ---
-        btn_row = QHBoxLayout()
+        # --- Button row (outside the scroll area, always visible) ---
+        btn_divider = QFrame()
+        btn_divider.setFrameShape(QFrame.HLine)
+        btn_divider.setStyleSheet(f"color: {_C_BORDER};")
+        root.addWidget(btn_divider)
+
+        btn_row_container = QWidget()
+        btn_row_container.setStyleSheet(f"background-color: {_C_BG};")
+        btn_row = QHBoxLayout(btn_row_container)
+        btn_row.setContentsMargins(24, 10, 24, 14)
         btn_row.setSpacing(10)
         btn_row.addStretch()
 
@@ -467,8 +515,7 @@ class PackExportDialog(QDialog):
         self._export_btn.clicked.connect(self._on_export)
         btn_row.addWidget(self._export_btn)
 
-        body.addLayout(btn_row)
-        root.addLayout(body)
+        root.addWidget(btn_row_container)
 
     # ------------------------------------------------------------------
     # File list population
@@ -575,7 +622,6 @@ class PackExportDialog(QDialog):
     def _show_error(self, msg: str) -> None:
         self._error_label.setText(msg)
         self._error_label.setVisible(True)
-        self.adjustSize()
 
     def _clear_error(self) -> None:
         self._error_label.setVisible(False)
@@ -597,7 +643,8 @@ class PackExportDialog(QDialog):
         else:
             self._pw_field.clear()
             self._confirm_field.clear()
-        self.adjustSize()
+        # No adjustSize() call here — window is now user-resizable,
+        # so we let Qt reflow naturally without forcing a resize.
 
     # ------------------------------------------------------------------
     # Export action
@@ -605,14 +652,9 @@ class PackExportDialog(QDialog):
 
     def _on_export(self) -> None:
         """
-        Validate all inputs, open a save-file dialog, and run create_pack().
-
-        Validation order:
-          1. At least one file selected.
-          2. Pack name non-empty and free of filesystem-illegal characters.
-          3. If encryption is enabled: password meets minimum length and
-             confirm field matches. Empty input → reject (use unchecked
-             checkbox instead).
+        Validate inputs, open a save-file dialog, then hand off to a
+        background QThread so the main thread (and progress dialog) stay
+        responsive throughout ZIP creation and optional AES encryption.
         """
         self._clear_error()
 
@@ -659,7 +701,7 @@ class PackExportDialog(QDialog):
                 return
             password = pw
 
-        # --- Destination ---
+        # --- Destination path (ask before starting the thread) ---
         default_dest = str(Path.home() / f"{pack_name}.dcmpack")
         dest_str, _  = QFileDialog.getSaveFileName(
             self,
@@ -674,17 +716,10 @@ class PackExportDialog(QDialog):
         if dest.suffix.lower() != ".dcmpack":
             dest = dest.with_suffix(".dcmpack")
 
-        # --- Create ---
-        progress = QProgressDialog(
-            f"Creating  {dest.name}\u2026",
-            None, 0, 0, self,
-        )
-        progress.setWindowTitle("Exporting Pack")
-        progress.setMinimumWidth(380)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.show()
-        QApplication.processEvents()
+        # Store before the thread starts so _on_export_cancelled can find it.
+        self._pending_dest: Path = dest
 
+        # --- Collect optional metadata ---
         author      = self._author_edit.text().strip()
         description = self._desc_edit.toPlainText().strip()
         tags        = _parse_tags(self._tags_edit.text())
@@ -705,26 +740,107 @@ class PackExportDialog(QDialog):
             ]
             pack_folders = matched or None
 
-        try:
-            self._created_path = create_pack(
-                stems, dest, password=password,
-                author=author, description=description, tags=tags,
-                pack_folders=pack_folders,
-            )
-        except DcmPackError as exc:
-            progress.close()
-            self._show_error(f"Export failed: {exc}")
-            log.error("Pack export failed: %s", exc)
-            return
-        except OSError as exc:
-            progress.close()
-            self._show_error(f"Could not write to disk: {exc}")
-            log.error("Pack export OS error: %s", exc)
-            return
+        # --- Progress dialog ---
+        # Shown before the thread starts so it is visible immediately.
+        self._progress = QProgressDialog(
+            f"Creating  {dest.name}\u2026",
+            "Cancel",        # label only — actual cancellation not yet supported
+            0,
+            len(stems),
+            self,
+        )
+        self._progress.setWindowTitle("Exporting Pack")
+        self._progress.setMinimumWidth(380)
+        self._progress.setWindowModality(Qt.WindowModal)
+        self._progress.setAutoClose(False)
+        self._progress.setAutoReset(False)
+        # Prevent the dialog from auto-dismissing; route Cancel through the worker.
+        self._progress.canceled.connect(self._on_export_cancel)
+        self._progress.show()
 
-        progress.close()
+        # Disable the export button while the operation is in flight.
+        self._export_btn.setEnabled(False)
+
+        # --- Worker + thread ---
+        self._worker = PackCreator(
+            stems=stems,
+            dest_path=dest,
+            password=password,
+            author=author,
+            description=description,
+            tags=tags,
+            pack_folders=pack_folders,
+        )
+        self._thread = QThread(self)
+
+        self._worker.moveToThread(self._thread)
+
+        # Wire signals before starting.
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._on_export_progress)
+        self._worker.finished.connect(self._on_export_done)
+        self._worker.cancelled.connect(self._on_export_cancelled)
+        self._worker.failed.connect(self._on_export_error)
+
+        # Ensure cleanup regardless of outcome.
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.cancelled.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+
+        self._thread.start()
+
+    # ------------------------------------------------------------------
+    # Worker callbacks (all called on the main thread via Qt signals)
+    # ------------------------------------------------------------------
+
+    def _on_export_progress(self, current: int, total: int) -> None:
+        """Update the progress dialog as each item is written."""
+        if self._progress is not None:
+            self._progress.setLabelText(
+                f"Writing item {current + 1} of {total}\u2026"
+            )
+            self._progress.setValue(current)
+
+    def _on_export_cancel(self) -> None:
+        """User clicked Cancel — ask the worker to stop after the current item."""
+        if self._worker is not None:
+            self._progress.setLabelText("Cancelling\u2026")
+            self._progress.setCancelButton(None)   # prevent double-clicks
+            self._worker.cancel()
+
+    def _on_export_cancelled(self) -> None:
+        """Worker confirmed it stopped cleanly — discard the partial file."""
+        partial = getattr(self, "_pending_dest", None)
+        self._cleanup_thread()
+        if partial and partial.exists():
+            try:
+                partial.unlink()
+                log.info("Removed partial pack '%s' after cancellation.", partial.name)
+            except OSError as exc:
+                log.warning("Could not remove partial pack '%s': %s", partial.name, exc)
+
+    def _on_export_done(self, out_path: object) -> None:
+        """Pack creation succeeded — tidy up and close the dialog."""
+        self._cleanup_thread()
+        self._created_path = out_path   # type: ignore[assignment]
         log.info(
-            "Exported pack '%s'  (%d item(s), encrypted=%s).",
-            dest.name, len(stems), password is not None,
+            "Exported pack '%s'.", Path(str(out_path)).name
         )
         self.accept()
+
+    def _on_export_error(self, message: str) -> None:
+        """Pack creation failed — surface the error and re-enable the button."""
+        self._cleanup_thread()
+        self._show_error(f"Export failed: {message}")
+        log.error("Pack export failed: %s", message)
+
+    def _cleanup_thread(self) -> None:
+        """Close the progress dialog and re-enable the export button."""
+        if self._progress is not None:
+            self._progress.close()
+            self._progress = None
+        self._export_btn.setEnabled(True)
+        self._thread = None     # type: ignore[assignment]
+        self._worker = None     # type: ignore[assignment]
