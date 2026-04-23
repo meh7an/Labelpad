@@ -49,6 +49,7 @@ def configure_logging():
 def check_dependencies():
     if getattr(sys, "frozen", False):
         return []
+    import importlib.util
     required = {
         "pydicom": "pydicom",
         "numpy":   "numpy",
@@ -58,9 +59,7 @@ def check_dependencies():
     }
     missing = []
     for module, package in required.items():
-        try:
-            __import__(module)
-        except ImportError:
+        if importlib.util.find_spec(module) is None:
             missing.append(package)
     return missing
 
@@ -209,7 +208,8 @@ def main():
             "Missing Dependencies",
             "The following required packages are not installed:\n\n"
             + "\n".join(f"  - {p}" for p in missing)
-            + "\n\nRun:  pip install -r requirements.txt",
+            + "\n\nRun with the same Python interpreter:\n"
+            + "  python -m pip install -r requirements.txt",
         )
         return 1
 
