@@ -40,6 +40,7 @@ from core.dicom_handler import (
     raster_path_for,
     suggest_slider_range,
 )
+from core.folder_store import FolderStore
 from core import metadata_store
 from core.paths import RASTER_DIR
 from ui.error_dialog import AppDialog
@@ -47,7 +48,7 @@ from ui.label_overlay import LabelOverlay, load_label_overlay
 
 log = logging.getLogger(__name__)
 
-_RASTER_DIR = RASTER_DIR
+_RASTER_DIR          = RASTER_DIR
 _PREVIEW_DEBOUNCE_MS = 60
 
 
@@ -56,10 +57,7 @@ _PREVIEW_DEBOUNCE_MS = 60
 # ---------------------------------------------------------------------------
 
 class _SliderRow(QWidget):
-    """
-    A horizontal row containing a label, a QSlider, and a QDoubleSpinBox.
-    The slider and spinbox are kept in sync bidirectionally.
-    """
+    """A horizontal row containing a label, a QSlider, and a QDoubleSpinBox."""
 
     value_changed = pyqtSignal(float)
 
@@ -67,8 +65,8 @@ class _SliderRow(QWidget):
         super().__init__(parent)
 
         self._scale = 10.0
-        self._min = minimum
-        self._max = maximum
+        self._min   = minimum
+        self._max   = maximum
 
         self._label = QLabel(label)
         self._label.setStyleSheet("color: #8A98AA; font-size: 11px;")
@@ -166,15 +164,15 @@ class _MetadataPanel(QFrame):
         ]
 
         for row_idx, (key, val) in enumerate(fields):
-            key_lbl = QLabel(key)
-            key_lbl.setStyleSheet("color: #5A7FA8; font-size: 11px;")
+            k_lbl = QLabel(key)
+            k_lbl.setStyleSheet("color: #5A7FA8; font-size: 11px;")
 
-            val_lbl = QLabel(val)
-            val_lbl.setStyleSheet("color: #D4D8DE; font-size: 11px;")
-            val_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            v_lbl = QLabel(val)
+            v_lbl.setStyleSheet("color: #D4D8DE; font-size: 11px;")
+            v_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-            grid.addWidget(key_lbl, row_idx, 0)
-            grid.addWidget(val_lbl, row_idx, 1)
+            grid.addWidget(k_lbl, row_idx, 0)
+            grid.addWidget(v_lbl, row_idx, 1)
 
         grid.setColumnStretch(1, 1)
 
@@ -187,13 +185,12 @@ class _LegendHud(QFrame):
     """
     Floating colour-legend overlay parented to the image panel.
 
-    Displays one labelled colour swatch per annotation label and provides a
-    Hide / Show toggle that collapses the body while keeping the header
-    visible.  Visibility is managed by the parent DicomViewer via populate()
-    and reposition().
+    Displays one labelled colour swatch per annotation label and a separate
+    "MISSING" section for mandatory labels not yet present in the annotation.
+    Provides a Hide / Show toggle that collapses the body.
     """
 
-    _SWATCH_PX    = 12
+    _SWATCH_PX     = 12
     _CORNER_MARGIN = 14
 
     def __init__(self, parent: QWidget) -> None:
@@ -218,12 +215,12 @@ class _LegendHud(QFrame):
         hdr.setContentsMargins(0, 0, 0, 0)
         hdr.setSpacing(8)
 
-        title = QLabel("LABELS")
-        title.setStyleSheet(
+        self._title = QLabel("LABELS")
+        self._title.setStyleSheet(
             "color: #5A7FA8; font-size: 10px;"
             "font-weight: 600; letter-spacing: 1.5px;"
         )
-        hdr.addWidget(title)
+        hdr.addWidget(self._title)
         hdr.addStretch()
 
         self._btn = QPushButton("Hide")
@@ -243,7 +240,7 @@ class _LegendHud(QFrame):
         outer.addLayout(hdr)
 
         # Collapsible body
-        self._body = QWidget()
+        self._body        = QWidget()
         self._body_layout = QVBoxLayout(self._body)
         self._body_layout.setContentsMargins(0, 2, 0, 0)
         self._body_layout.setSpacing(5)
@@ -256,20 +253,37 @@ class _LegendHud(QFrame):
     # Public API
     # ------------------------------------------------------------------
 
-    def populate(self, color_map: dict) -> None:
+    def populate(
+        self,
+        color_map:     dict,
+        missing_labels: set[str] | None = None,
+        progress_text:  str             = "",
+    ) -> None:
         """
-        Rebuild legend rows from a label → RGB tuple mapping.
-        Hides the HUD entirely when color_map is empty.
-        """
-        while self._body_layout.count():
-            item = self._body_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        Rebuild the HUD from current annotation data.
 
-        if not color_map:
+        Args:
+            color_map:      label → (R, G, B) for every shape present in the annotation.
+            missing_labels: Mandatory labels not yet drawn in the annotation.
+                            Rendered with a red ✕ and italic text.
+            progress_text:  Optional fraction string shown in the title,
+                            e.g. '2\u202f/\u202f4'.  Empty string = no suffix.
+        """
+        # Clear body
+        while self._body_layout.count():
+            child = self._body_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        missing = missing_labels or set()
+        if not color_map and not missing:
             self.hide()
             return
 
+        # Title
+        self._title.setText(f"LABELS  \u00b7  {progress_text}" if progress_text else "LABELS")
+
+        # Present labels (coloured swatches)
         for label, (r, g, b) in sorted(color_map.items()):
             row = QWidget()
             rl  = QHBoxLayout(row)
@@ -292,20 +306,49 @@ class _LegendHud(QFrame):
 
             self._body_layout.addWidget(row)
 
+        # Missing mandatory labels
+        if missing:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet("color: #1E2A3A;")
+            self._body_layout.addWidget(sep)
+
+            req_hdr = QLabel("MISSING")
+            req_hdr.setStyleSheet(
+                "color: #A83040; font-size: 9px; font-weight: 600; letter-spacing: 1px;"
+            )
+            self._body_layout.addWidget(req_hdr)
+
+            for label in sorted(missing):
+                row = QWidget()
+                rl  = QHBoxLayout(row)
+                rl.setContentsMargins(0, 0, 0, 0)
+                rl.setSpacing(8)
+
+                x_lbl = QLabel("\u2715")   # ✕
+                x_lbl.setFixedWidth(self._SWATCH_PX)
+                x_lbl.setAlignment(Qt.AlignCenter)
+                x_lbl.setStyleSheet(
+                    "color: #A83040; font-size: 11px; font-weight: 700;"
+                )
+                rl.addWidget(x_lbl)
+
+                name_lbl = QLabel(label)
+                name_lbl.setStyleSheet(
+                    "color: #5A3A44; font-size: 11px; font-style: italic;"
+                )
+                rl.addWidget(name_lbl)
+                rl.addStretch()
+
+                self._body_layout.addWidget(row)
+
         self.show()
-        self.raise_()  # ensure HUD renders above sibling layout widgets
+        self.raise_()
         self.adjustSize()
 
     def reposition(self, panel: QWidget) -> None:
-        """
-        Snap HUD to the top-right corner of panel.
-
-        The HUD is parented to the dialog (not panel), so self.move() is in
-        dialog-local coordinates.  panel.x() + panel.width() gives the right
-        edge of the image area in that same coordinate space, which keeps the
-        HUD correctly anchored regardless of how narrow the image panel is.
-        """
-        self._panel = panel  # cache so _toggle can reposition without an argument
+        """Snap HUD to the top-right corner of panel."""
+        self._panel = panel
         m = self._CORNER_MARGIN
         x = panel.x() + panel.width() - self.width() - m
         self.move(x, m)
@@ -341,9 +384,16 @@ class DicomViewer(QDialog):
 
     def __init__(self, dicom, parent=None):
         super().__init__(parent)
-        self._dicom           = dicom
-        self._current_params  = self._resolve_initial_params()
-        self._overlay: Optional[LabelOverlay] = load_label_overlay(dicom.path)
+        self._dicom          = dicom
+        self._current_params = self._resolve_initial_params()
+
+        # Resolve mandatory labels for this stem from the folder store.
+        self._mandatory_labels: tuple[str, ...] = (
+            FolderStore().mandatory_labels_for_stem(dicom.path.stem)
+        )
+        self._overlay: Optional[LabelOverlay] = load_label_overlay(
+            dicom.path, mandatory_labels=self._mandatory_labels
+        )
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
@@ -352,7 +402,9 @@ class DicomViewer(QDialog):
 
         self._build_ui()
 
-        if self._overlay:
+        # Show HUD if there is an overlay OR if there are mandatory labels
+        # (in the latter case, all are shown as missing to guide the annotator).
+        if self._overlay or self._mandatory_labels:
             QTimer.singleShot(50, self._show_legend_hud)
 
         self._refresh_preview()
@@ -407,9 +459,7 @@ class DicomViewer(QDialog):
         self._image_label.setStyleSheet("background-color: #080C12;")
         layout.addWidget(self._image_label, stretch=1)
 
-        # Legend HUD is parented to the dialog (not panel) so that self.move()
-        # inside _LegendHud operates in dialog-local coordinates, keeping the
-        # HUD anchored correctly regardless of image panel width.
+        # HUD is parented to the dialog so self.move() is in dialog-local coords.
         self._legend_hud = _LegendHud(self)
 
         return panel
@@ -508,7 +558,22 @@ class DicomViewer(QDialog):
 
     def _show_legend_hud(self) -> None:
         """Populate and position the legend HUD after the initial display delay."""
-        self._legend_hud.populate(self._overlay.color_map)
+        if self._overlay:
+            color_map    = self._overlay.color_map
+            missing      = self._overlay.missing_labels
+            progress_txt = self._overlay.mandatory_progress_text
+        else:
+            # No annotation yet — show all mandatory labels as missing.
+            color_map    = {}
+            missing      = set(self._mandatory_labels)
+            n            = len(self._mandatory_labels)
+            progress_txt = f"0\u202f/\u202f{n}" if n else ""
+
+        self._legend_hud.populate(
+            color_map,
+            missing_labels=missing,
+            progress_text=progress_txt,
+        )
         self._legend_hud.reposition(self._image_panel)
 
     def _resolve_initial_params(self) -> WindowingParams:

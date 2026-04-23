@@ -42,7 +42,9 @@ from PyQt5.QtWidgets import (
 )
 
 from core.dcmpack import DcmPackError, create_pack
-from core.paths import LABELED_DIR, RASTER_DIR, UNLABELED_DIR
+from core.folder_store import FolderStore
+from core.paths import LABELED_DIR, UNLABELED_DIR
+from core.status import FileStatus, STATUS_COLORS, resolve_status
 
 log = logging.getLogger(__name__)
 
@@ -83,32 +85,13 @@ def _default_author() -> str:
     except OSError:
         return ""
 
+
 # ---------------------------------------------------------------------------
-# File status helpers (local — avoids importing from main_window)
+# Path references — may be overridden in tests via monkeypatch.
 # ---------------------------------------------------------------------------
 
-_STATUS_UNLABELED    = "Unlabeled"
-_STATUS_RASTER_READY = "Raster Ready"
-_STATUS_LABELED      = "Labeled"
-
-_STATUS_COLORS = {
-    _STATUS_UNLABELED:    "#5A7FA8",
-    _STATUS_RASTER_READY: "#C8922A",
-    _STATUS_LABELED:      "#3E8E41",
-}
-
-# Module-level path references — may be overridden in tests via monkeypatch.
 _UNLABELED_DIR: Path = UNLABELED_DIR
-_RASTER_DIR:    Path = RASTER_DIR
 _LABELED_DIR:   Path = LABELED_DIR
-
-
-def _resolve_status(dcm_path: Path) -> str:
-    if (_LABELED_DIR / f"{dcm_path.stem}.json").exists():
-        return _STATUS_LABELED
-    if (_RASTER_DIR  / f"{dcm_path.stem}.jpg").exists():
-        return _STATUS_RASTER_READY
-    return _STATUS_UNLABELED
 
 
 # ---------------------------------------------------------------------------
@@ -202,9 +185,15 @@ class PackExportDialog(QDialog):
     the path of the exported archive.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        preselected_stems: list[str] | None = None,
+    ) -> None:
         super().__init__(parent)
-        self._created_path: Path | None = None
+        self._created_path: Path | None    = None
+        self._preselected_stems: set[str]  = set(preselected_stems or [])
+        self._store = FolderStore()
         self._build_ui()
         self._populate_file_list()
 
@@ -358,7 +347,7 @@ class PackExportDialog(QDialog):
         desc_lbl.setStyleSheet(f"color: {_C_DIMMED}; font-size: 11px;")
         self._desc_edit = QPlainTextEdit()
         self._desc_edit.setPlaceholderText("Optional description of this pack\u2026")
-        self._desc_edit.setFixedHeight(72)   # ~3 lines
+        self._desc_edit.setFixedHeight(72)
         self._desc_edit.setStyleSheet(
             f"QPlainTextEdit {{ {_field_style} }}"
             f"QPlainTextEdit:focus {{ {_field_focus} }}"
@@ -380,7 +369,26 @@ class PackExportDialog(QDialog):
 
         body.addWidget(self._divider())
 
-        # --- Encryption section ---
+        body.addWidget(self._section_label("FOLDER STRUCTURE"))
+
+        self._folder_check = QCheckBox("Include folder membership and mandatory labels")
+        self._folder_check.setChecked(True)
+        self._folder_check.setStyleSheet(
+            f"QCheckBox {{ color: {_C_MUTED}; font-size: 12px; spacing: 8px; }}"
+            f"QCheckBox::indicator {{"
+            f"  width: 16px; height: 16px;"
+            f"  border: 1px solid {_C_BORDER}; border-radius: 3px;"
+            f"  background: {_C_INPUT};"
+            f"}}"
+            f"QCheckBox::indicator:checked {{"
+            f"  background: {_C_ACCENT}; border-color: {_C_ACCENT};"
+            f"}}"
+            f"QCheckBox::indicator:hover {{ border-color: {_C_ACCENT}; }}"
+        )
+        body.addWidget(self._folder_check)
+
+        body.addWidget(self._divider())
+
         body.addWidget(self._section_label("ENCRYPTION"))
 
         self._encrypt_check = QCheckBox("Encrypt with password  (AES-256)")
@@ -486,12 +494,13 @@ class PackExportDialog(QDialog):
             self._export_btn.setEnabled(False)
         else:
             for dcm_path in dcm_files:
-                status = _resolve_status(dcm_path)
+                status = resolve_status(dcm_path, self._store)
                 item   = QListWidgetItem(f"{dcm_path.name}    [{status}]")
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Unchecked)
+                state = Qt.Checked if dcm_path.stem in self._preselected_stems else Qt.Unchecked
+                item.setCheckState(state)
                 item.setData(Qt.UserRole, dcm_path)
-                item.setForeground(QColor(_STATUS_COLORS[status]))
+                item.setForeground(QColor(STATUS_COLORS[status]))
                 self._file_list.addItem(item)
 
         self._file_list.blockSignals(False)
@@ -659,7 +668,7 @@ class PackExportDialog(QDialog):
             "DCMPACK Files (*.dcmpack);;All Files (*)",
         )
         if not dest_str:
-            return  # user dismissed the save dialog — no error shown
+            return
 
         dest = Path(dest_str)
         if dest.suffix.lower() != ".dcmpack":
@@ -674,16 +683,33 @@ class PackExportDialog(QDialog):
         progress.setMinimumWidth(380)
         progress.setWindowModality(Qt.WindowModal)
         progress.show()
-        QApplication.processEvents()  # flush paint events before blocking call
+        QApplication.processEvents()
 
         author      = self._author_edit.text().strip()
         description = self._desc_edit.toPlainText().strip()
         tags        = _parse_tags(self._tags_edit.text())
 
+        pack_folders = None
+        if self._folder_check.isChecked():
+            from core.dcmpack import PackFolder
+            selected_set = set(stems)
+            matched = [
+                PackFolder(
+                    id=f.id,
+                    name=f.name,
+                    mandatory_labels=f.mandatory_labels,
+                    stems=tuple(s for s in f.stems if s in selected_set),
+                )
+                for f in self._store.all_folders()
+                if any(s in selected_set for s in f.stems)
+            ]
+            pack_folders = matched or None
+
         try:
             self._created_path = create_pack(
                 stems, dest, password=password,
                 author=author, description=description, tags=tags,
+                pack_folders=pack_folders,
             )
         except DcmPackError as exc:
             progress.close()

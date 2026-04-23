@@ -84,20 +84,27 @@ class LabelOverlay:
         - circle   — LabelMe encoding: points[0] = center,
                      points[1] = any point on the circumference.
                      Radius is derived as the Euclidean distance between them.
+
+    Args:
+        mandatory_labels: Labels that every file in the parent folder must
+                          carry to reach Labeled status.  Used to compute
+                          missing_labels and mandatory_progress_text.
     """
 
     def __init__(
         self,
-        shapes: list,
-        image_w: int,
-        image_h: int,
-        image_path: Optional[Path] = None,
+        shapes:           list,
+        image_w:          int,
+        image_h:          int,
+        image_path:       Optional[Path]      = None,
+        mandatory_labels: tuple[str, ...]     = (),
     ) -> None:
-        self._shapes     = shapes
-        self._image_w    = image_w
-        self._image_h    = image_h
-        self._image_path = image_path
-        self._color_map: dict = {}
+        self._shapes           = shapes
+        self._image_w          = image_w
+        self._image_h          = image_h
+        self._image_path       = image_path
+        self._mandatory_labels = mandatory_labels
+        self._color_map: dict  = {}
         self._assign_colors()
 
     # ------------------------------------------------------------------
@@ -118,8 +125,31 @@ class LabelOverlay:
 
     @property
     def color_map(self) -> dict:
-        """Returns a shallow copy of the label → RGB tuple mapping."""
+        """Shallow copy of the label → RGB tuple mapping."""
         return dict(self._color_map)
+
+    @property
+    def missing_labels(self) -> set[str]:
+        """
+        Mandatory labels not yet present in this annotation.
+        Returns an empty set when no mandatory labels are defined.
+        """
+        if not self._mandatory_labels:
+            return set()
+        present = {s["label"] for s in self._shapes if "label" in s}
+        return set(self._mandatory_labels) - present
+
+    @property
+    def mandatory_progress_text(self) -> str:
+        """
+        Human-readable progress fraction, e.g. '2\u202f/\u202f4'.
+        Returns an empty string when no mandatory labels are defined.
+        """
+        if not self._mandatory_labels:
+            return ""
+        n_total = len(self._mandatory_labels)
+        n_done  = n_total - len(self.missing_labels)
+        return f"{n_done}\u202f/\u202f{n_total}"
 
     # ------------------------------------------------------------------
     # Colour assignment
@@ -137,9 +167,9 @@ class LabelOverlay:
     def _draw_polygon(
         self,
         fill_draw: ImageDraw.ImageDraw,
-        top_draw: ImageDraw.ImageDraw,
-        pts: list,
-        color_fill: tuple,
+        top_draw:  ImageDraw.ImageDraw,
+        pts:       list,
+        color_fill:    tuple,
         color_outline: tuple,
         font,
         label: str,
@@ -164,9 +194,9 @@ class LabelOverlay:
     def _draw_circle(
         self,
         fill_draw: ImageDraw.ImageDraw,
-        top_draw: ImageDraw.ImageDraw,
-        pts: list,
-        color_fill: tuple,
+        top_draw:  ImageDraw.ImageDraw,
+        pts:       list,
+        color_fill:    tuple,
         color_outline: tuple,
         font,
         label: str,
@@ -185,10 +215,7 @@ class LabelOverlay:
         ex, ey = pts[1]
         radius = math.hypot(ex - cx, ey - cy)
 
-        bbox = [
-            (cx - radius, cy - radius),
-            (cx + radius, cy + radius),
-        ]
+        bbox = [(cx - radius, cy - radius), (cx + radius, cy + radius)]
 
         fill_draw.ellipse(bbox, fill=color_fill)
         top_draw.ellipse(bbox, outline=color_outline, width=_OUTLINE_WIDTH)
@@ -202,10 +229,10 @@ class LabelOverlay:
 
     @staticmethod
     def _draw_label(
-        draw: ImageDraw.ImageDraw,
+        draw:       ImageDraw.ImageDraw,
         font,
-        label: str,
-        anchor_pt: tuple,
+        label:      str,
+        anchor_pt:  tuple,
         color_outline: tuple,
     ) -> None:
         tx = int(anchor_pt[0]) + 6
@@ -273,13 +300,20 @@ class LabelOverlay:
 # Public loader
 # ---------------------------------------------------------------------------
 
-def load_label_overlay(dcm_path: Path) -> Optional[LabelOverlay]:
+def load_label_overlay(
+    dcm_path:         Path,
+    mandatory_labels: tuple[str, ...] = (),
+) -> Optional[LabelOverlay]:
     """
     Look for a LabelMe JSON in Labeled/ matching the given DICOM file.
     Returns a LabelOverlay if found and valid, None otherwise.
 
     Handles labelme's optional numeric timestamp prefix:
         e.g. '1776400910652_<stem>.json'
+
+    Args:
+        dcm_path:         Path to the .dcm file (stem used for lookup).
+        mandatory_labels: Forwarded to LabelOverlay for progress tracking.
     """
     stem = dcm_path.stem
 
@@ -325,7 +359,11 @@ def load_label_overlay(dcm_path: Path) -> Optional[LabelOverlay]:
             json_path.name,
             resolved_path is not None,
         )
-        return LabelOverlay(supported_shapes, image_w, image_h, image_path=resolved_path)
+        return LabelOverlay(
+            supported_shapes, image_w, image_h,
+            image_path=resolved_path,
+            mandatory_labels=mandatory_labels,
+        )
 
     except (KeyError, ValueError, json.JSONDecodeError) as exc:
         log.warning("Could not parse label JSON '%s': %s", json_path.name, exc)

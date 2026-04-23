@@ -2,18 +2,8 @@
 ui/pack_info_dialog.py
 Read-only pack preview dialog shown before every import.
 
-The dialog receives an already-parsed DcmPackManifest — the caller is
-responsible for password resolution and manifest reading. This keeps the
-dialog stateless and testable without any filesystem access.
-
-Usage
------
-    with open_pack(path, password) as zf:
-        manifest = read_manifest(zf)
-
-    if show_pack_info(parent, manifest, path):
-        # user confirmed — proceed with extraction
-        ...
+Displays manifest metadata, the full item list, and (when present) the
+folder structure embedded in the pack.
 """
 
 from __future__ import annotations
@@ -40,21 +30,17 @@ from PyQt5.QtWidgets import (
 
 from core.dcmpack import DcmPackManifest
 
-# ---------------------------------------------------------------------------
-# Theme constants (mirrors values in style.qss)
-# ---------------------------------------------------------------------------
-
-_C_BG       = "#0F1117"
-_C_PANEL    = "#0A0F1A"
-_C_BORDER   = "#1E2A3A"
-_C_ACCENT   = "#2A7AD4"
-_C_FG       = "#D4D8DE"
-_C_MUTED    = "#8A98AA"
-_C_DIMMED   = "#5A7FA8"
-_C_LABELED  = "#3E8E41"
+_C_BG        = "#0F1117"
+_C_PANEL     = "#0A0F1A"
+_C_BORDER    = "#1E2A3A"
+_C_ACCENT    = "#2A7AD4"
+_C_FG        = "#D4D8DE"
+_C_MUTED     = "#8A98AA"
+_C_DIMMED    = "#5A7FA8"
+_C_LABELED   = "#3E8E41"
 _C_UNLABELED = "#5A7FA8"
-_C_WARNING  = "#C8922A"
-_C_ERROR    = "#A83040"
+_C_WARNING   = "#C8922A"
+_C_ERROR     = "#A83040"
 
 _LABEL_PROTECTED   = "PROTECTED"
 _LABEL_UNPROTECTED = "OPEN"
@@ -72,20 +58,19 @@ def _format_datetime(iso_str: str) -> str:
     if not iso_str:
         return "Unknown"
     try:
-        dt = datetime.fromisoformat(iso_str)
-        # Normalise to UTC for display consistency across machines.
+        dt     = datetime.fromisoformat(iso_str)
         dt_utc = dt.astimezone(timezone.utc)
-        day = str(dt_utc.day)
-        month = dt_utc.strftime("%B")
-        year = dt_utc.strftime("%Y")
-        time = dt_utc.strftime("%H:%M")
+        day    = str(dt_utc.day)
+        month  = dt_utc.strftime("%B")
+        year   = dt_utc.strftime("%Y")
+        time   = dt_utc.strftime("%H:%M")
         return f"{day} {month} {year}  \u00b7  {time} UTC"
     except (ValueError, OSError):
         return iso_str
 
 
 def _format_tags(tags: tuple[str, ...]) -> str:
-    return ",  ".join(tags) if tags else "\u2014"  # em-dash when empty
+    return ",  ".join(tags) if tags else "\u2014"
 
 
 # ---------------------------------------------------------------------------
@@ -102,9 +87,9 @@ class _Badge(QLabel):
         super().__init__(text, parent)
         self.setStyleSheet(
             f"QLabel {{"
-            f"  background-color: {color}22;"    # 13 % opacity fill
+            f"  background-color: {color}22;"
             f"  color: {color};"
-            f"  border: 1px solid {color}66;"    # 40 % opacity border
+            f"  border: 1px solid {color}66;"
             f"  border-radius: 3px;"
             f"  font-size: 10px;"
             f"  font-weight: 700;"
@@ -123,14 +108,8 @@ class PackInfoDialog(QDialog):
     """
     Read-only preview dialog for a .dcmpack archive.
 
-    Displays all manifest metadata and the full item list. The user can
-    either confirm the import or cancel. No extraction is performed here.
-
-    Args:
-        parent:    Qt parent widget (may be None).
-        manifest:  Already-parsed DcmPackManifest for the archive.
-        pack_path: Filesystem path to the .dcmpack file — used for the
-                   filename display only; the file is not re-opened.
+    Shows all manifest metadata, the item list, and (when present) the
+    embedded folder structure.  No extraction is performed here.
     """
 
     def __init__(
@@ -176,6 +155,12 @@ class PackInfoDialog(QDialog):
         body.addWidget(self._section_label("CONTENTS"))
         self._file_list = self._build_item_list()
         body.addWidget(self._file_list)
+
+        if self._manifest.folders:
+            body.addWidget(self._divider())
+            body.addWidget(self._section_label("FOLDERS"))
+            body.addWidget(self._build_folder_list())
+
         body.addWidget(self._divider())
         body.addLayout(self._build_button_row())
 
@@ -191,16 +176,12 @@ class PackInfoDialog(QDialog):
         name_row.setContentsMargins(0, 0, 0, 0)
 
         name_lbl = QLabel(self._manifest.pack_name or self._pack_path.stem)
-        name_lbl.setStyleSheet(
-            f"color: {_C_FG}; font-size: 15px; font-weight: 700;"
-        )
+        name_lbl.setStyleSheet(f"color: {_C_FG}; font-size: 15px; font-weight: 700;")
         name_row.addWidget(name_lbl)
 
-        if self._manifest.password_protected:
-            name_row.addWidget(_Badge(_LABEL_PROTECTED, _C_WARNING))
-        else:
-            name_row.addWidget(_Badge(_LABEL_UNPROTECTED, _C_DIMMED))
-
+        badge_color = _C_WARNING if self._manifest.password_protected else _C_DIMMED
+        badge_text  = _LABEL_PROTECTED if self._manifest.password_protected else _LABEL_UNPROTECTED
+        name_row.addWidget(_Badge(badge_text, badge_color))
         name_row.addStretch()
         layout.addLayout(name_row)
 
@@ -235,6 +216,9 @@ class PackInfoDialog(QDialog):
             ("Items",       items_str),
         ]
 
+        if m.folders:
+            rows.append(("Folders", str(len(m.folders))))
+
         grid = QGridLayout(frame)
         grid.setContentsMargins(14, 12, 14, 12)
         grid.setHorizontalSpacing(16)
@@ -257,28 +241,13 @@ class PackInfoDialog(QDialog):
         return frame
 
     def _build_item_list(self) -> QListWidget:
-        lw = QListWidget()
-        lw.setMaximumHeight(200)
-        lw.setFocusPolicy(Qt.NoFocus)
-        lw.setStyleSheet(
-            f"QListWidget {{"
-            f"  background-color: {_C_PANEL};"
-            f"  border: 1px solid {_C_BORDER}; border-radius: 4px; outline: none;"
-            f"}}"
-            f"QListWidget::item {{"
-            f"  padding: 6px 12px;"
-            f"  border-bottom: 1px solid #111820; font-size: 12px;"
-            f"}}"
-            f"QListWidget::item:selected {{ background: transparent; }}"
-        )
+        lw = self._make_list_widget()
 
         for item in self._manifest.items:
             status   = "Labeled"   if item.labeled else "Unlabeled"
             color    = _C_LABELED  if item.labeled else _C_UNLABELED
-            row_text = f"{item.stem}    [{status}]"
-
-            lw_item = QListWidgetItem(row_text)
-            lw_item.setFlags(Qt.ItemIsEnabled)   # visible but not selectable
+            lw_item  = QListWidgetItem(f"{item.stem}    [{status}]")
+            lw_item.setFlags(Qt.ItemIsEnabled)
             lw_item.setForeground(QColor(color))
             lw.addItem(lw_item)
 
@@ -287,6 +256,28 @@ class PackInfoDialog(QDialog):
             empty.setFlags(Qt.NoItemFlags)
             empty.setForeground(QColor("#2E3A50"))
             lw.addItem(empty)
+
+        return lw
+
+    def _build_folder_list(self) -> QListWidget:
+        """Render the embedded folder structure from the manifest."""
+        lw = self._make_list_widget()
+
+        for folder in self._manifest.folders:
+            n      = len(folder.stems)
+            req    = (
+                f"  \u00b7  requires: {', '.join(folder.mandatory_labels)}"
+                if folder.mandatory_labels else ""
+            )
+            text   = f"{folder.name}    [{n} item{'s' if n != 1 else ''}{req}]"
+            lw_item = QListWidgetItem(text)
+            lw_item.setFlags(Qt.ItemIsEnabled)
+            lw_item.setForeground(QColor(_C_FG))
+            lw_item.setToolTip(
+                f"Mandatory labels: {', '.join(folder.mandatory_labels) or 'none'}\n"
+                f"Stems: {', '.join(folder.stems)}"
+            )
+            lw.addItem(lw_item)
 
         return lw
 
@@ -329,6 +320,23 @@ class PackInfoDialog(QDialog):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _make_list_widget(self) -> QListWidget:
+        lw = QListWidget()
+        lw.setMaximumHeight(180)
+        lw.setFocusPolicy(Qt.NoFocus)
+        lw.setStyleSheet(
+            f"QListWidget {{"
+            f"  background-color: {_C_PANEL};"
+            f"  border: 1px solid {_C_BORDER}; border-radius: 4px; outline: none;"
+            f"}}"
+            f"QListWidget::item {{"
+            f"  padding: 6px 12px;"
+            f"  border-bottom: 1px solid #111820; font-size: 12px;"
+            f"}}"
+            f"QListWidget::item:selected {{ background: transparent; }}"
+        )
+        return lw
 
     def _section_label(self, text: str) -> QLabel:
         lbl = QLabel(text)

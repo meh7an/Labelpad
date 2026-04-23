@@ -126,7 +126,11 @@ class LabelpadApp(QApplication):
 
     def event(self, e: QEvent) -> bool:
         if e.type() == QEvent.FileOpen:
-            path = Path(QFileOpenEvent(e).file())
+            # Cast 'e' to QFileOpenEvent implicitly by just using the event object
+            # In PyQt5, when e.type() is FileOpen, 'e' already has the .file() method
+            # but to be safe and clear, we treat 'e' as the event object itself.
+            path = Path(e.file()) 
+            
             if path.suffix.lower() == ".dcmpack":
                 if self._main_window is not None:
                     self._main_window._open_pack_from_path(path)

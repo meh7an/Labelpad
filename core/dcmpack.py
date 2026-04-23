@@ -15,17 +15,21 @@ Internal ZIP layout
 Encryption
 ----------
 When a password is supplied, pyzipper applies AES-256 (WZ_AES) encryption
-to every member in the archive, including manifest.json. Use
-peek_is_password_protected() to detect protection before prompting the user.
+to every member in the archive, including manifest.json.
 
 imagePath handling (M2)
 -----------------------
 LabelMe bakes an absolute imagePath into its annotation JSON at save time.
-This path is valid only on the machine that ran labelme. To make packs
-portable, create_pack() rewrites imagePath to the relative form ./stem.jpg
-in-memory before bundling. extract_pack() then rewrites it back to the
-absolute raster path on the receiving machine. Neither operation touches the
-on-disk annotation in the application's Labeled/ directory.
+create_pack() rewrites imagePath to the relative form ./stem.jpg in-memory
+before bundling. extract_pack() rewrites it back to the absolute raster path
+on the receiving machine.
+
+Folder structure (M5)
+---------------------
+An optional "folders" array in manifest.json carries folder name, mandatory
+labels, and member stems. extract_pack() merges this into the local
+FolderStore via upsert_folder(), preserving the folder id for idempotency
+across re-imports. Old packs without this key are handled transparently.
 """
 
 import json
@@ -45,10 +49,11 @@ _SCHEMA_VERSION   = 1
 _MANIFEST_ARCNAME = "manifest.json"
 
 # Module-level path references — may be overridden in tests via monkeypatch.
-_UNLABELED_DIR: Path = UNLABELED_DIR
-_RASTER_DIR:    Path = RASTER_DIR
-_DATA_DIR:      Path = DATA_DIR
-_LABELED_DIR:   Path = LABELED_DIR
+_UNLABELED_DIR: Path       = UNLABELED_DIR
+_RASTER_DIR:    Path       = RASTER_DIR
+_DATA_DIR:      Path       = DATA_DIR
+_LABELED_DIR:   Path       = LABELED_DIR
+_FOLDERS_JSON:  Path | None = None   # None → FolderStore uses DATA_ROOT default
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +92,20 @@ class DcmPackItem:
 
 
 @dataclass(frozen=True)
+class PackFolder:
+    """
+    Folder metadata bundled inside a .dcmpack manifest.
+
+    Preserves folder identity (id) so that repeated imports of the same pack
+    are idempotent — the local FolderStore merges rather than duplicates.
+    """
+    id:               str
+    name:             str
+    mandatory_labels: tuple[str, ...]
+    stems:            tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class DcmPackManifest:
     """Parsed representation of a pack's manifest.json."""
     schema_version:     int
@@ -94,10 +113,10 @@ class DcmPackManifest:
     created_at:         str
     password_protected: bool
     items:              tuple[DcmPackItem, ...]
-    # Optional metadata — absent in v1 packs; defaults applied by _parse_manifest.
-    author:      str             = ""
-    description: str             = ""
-    tags:        tuple[str, ...] = field(default_factory=tuple)
+    author:      str                    = ""
+    description: str                    = ""
+    tags:        tuple[str, ...]        = field(default_factory=tuple)
+    folders:     tuple[PackFolder, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -105,7 +124,7 @@ class ImportResult:
     """Summary returned by extract_pack()."""
     imported: list[str]             = field(default_factory=list)
     skipped:  list[str]             = field(default_factory=list)
-    failed:   list[tuple[str, str]] = field(default_factory=list)  # (stem, reason)
+    failed:   list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -115,12 +134,9 @@ class ImportResult:
     def summary(self) -> str:
         """Human-readable one-liner suitable for a status bar message."""
         parts = []
-        if self.imported:
-            parts.append(f"{len(self.imported)} imported")
-        if self.skipped:
-            parts.append(f"{len(self.skipped)} skipped")
-        if self.failed:
-            parts.append(f"{len(self.failed)} failed")
+        if self.imported: parts.append(f"{len(self.imported)} imported")
+        if self.skipped:  parts.append(f"{len(self.skipped)} skipped")
+        if self.failed:   parts.append(f"{len(self.failed)} failed")
         return "  |  ".join(parts) if parts else "Nothing to import"
 
 
@@ -128,17 +144,10 @@ class ImportResult:
 # Archive path helpers
 # ---------------------------------------------------------------------------
 
-def _dcm_arc_path(stem: str) -> str:
-    return f"items/{stem}/{stem}.dcm"
-
-def _jpg_arc_path(stem: str) -> str:
-    return f"items/{stem}/{stem}.jpg"
-
-def _windowing_arc_path(stem: str) -> str:
-    return f"items/{stem}/{stem}_windowing.json"
-
-def _label_arc_path(stem: str) -> str:
-    return f"items/{stem}/{stem}.json"
+def _dcm_arc_path(stem: str)       -> str: return f"items/{stem}/{stem}.dcm"
+def _jpg_arc_path(stem: str)       -> str: return f"items/{stem}/{stem}.jpg"
+def _windowing_arc_path(stem: str) -> str: return f"items/{stem}/{stem}_windowing.json"
+def _label_arc_path(stem: str)     -> str: return f"items/{stem}/{stem}.json"
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +206,15 @@ def _parse_manifest(raw: bytes) -> DcmPackManifest:
             for i in data.get("items", [])
         )
         tags = tuple(str(t) for t in data.get("tags", []))
+        folders = tuple(
+            PackFolder(
+                id=str(f["id"]),
+                name=str(f["name"]),
+                mandatory_labels=tuple(str(l) for l in f.get("mandatory_labels", [])),
+                stems=tuple(str(s) for s in f.get("stems", [])),
+            )
+            for f in data.get("folders", [])
+        )
         return DcmPackManifest(
             schema_version=version,
             pack_name=str(data["pack_name"]),
@@ -206,6 +224,7 @@ def _parse_manifest(raw: bytes) -> DcmPackManifest:
             author=str(data.get("author", "")),
             description=str(data.get("description", "")),
             tags=tags,
+            folders=folders,
         )
     except (KeyError, TypeError) as exc:
         raise DcmPackCorruptError(
@@ -254,12 +273,21 @@ def _write_manifest(zf: pyzipper.AESZipFile, manifest: DcmPackManifest) -> None:
             {"stem": item.stem, "labeled": item.labeled}
             for item in manifest.items
         ],
+        "folders": [
+            {
+                "id":               f.id,
+                "name":             f.name,
+                "mandatory_labels": list(f.mandatory_labels),
+                "stems":            list(f.stems),
+            }
+            for f in manifest.folders
+        ],
     }
     zf.writestr(_MANIFEST_ARCNAME, json.dumps(record, indent=2))
 
 
 # ---------------------------------------------------------------------------
-# Label imagePath patch utilities (M2)
+# Label imagePath patch utilities
 # ---------------------------------------------------------------------------
 
 def _patch_label_bytes(raw: bytes, new_image_path: str) -> bytes:
@@ -313,13 +341,8 @@ def patch_label_imagepath(json_path: Path, new_image_path: Path | str) -> None:
         raise LabelPatchError(
             f"Cannot read label annotation '{json_path.name}': {exc}"
         ) from exc
-
-    if isinstance(new_image_path, Path):
-        path_str = new_image_path.as_posix()
-    else:
-        path_str = str(new_image_path)
-    patched = _patch_label_bytes(raw, path_str)
-
+    path_str = new_image_path.as_posix() if isinstance(new_image_path, Path) else str(new_image_path)
+    patched  = _patch_label_bytes(raw, path_str)
     try:
         json_path.write_bytes(patched)
     except OSError as exc:
@@ -393,40 +416,26 @@ def extract_pack(
     """
     Extract a .dcmpack archive into the application's data directories.
 
-    Routing per item:
-        DICOM   → UNLABELED_DIR/<stem>.dcm
-        Raster  → RASTER_DIR/<stem>.jpg          (labeled only)
-        WC/WW   → DATA_DIR/<stem>.json           (labeled only)
-        Label   → LABELED_DIR/<stem>.json        (labeled only)
-
-    After extracting a labeled item, the annotation's imagePath is rewritten
-    to the absolute raster path on this machine via patch_label_imagepath().
-    If patching fails, the extraction is still recorded as successful and a
-    warning is emitted; the stale path is a cosmetic issue for labelme, not
-    for Labelpad's own overlay renderer.
-
-    Conflict resolution is decided per-stem on the DICOM destination: if
-    UNLABELED_DIR/<stem>.dcm already exists and on_conflict is "skip", the
-    entire stem (including its labeled assets) is skipped.
-
-    Individual failures are recorded in ImportResult.failed rather than
-    aborting the entire import, so one corrupt item does not block the rest.
+    After extraction, folder structure from the manifest is merged into the
+    local FolderStore via upsert_folder().  Only stems that were actually
+    imported are added to folders; skipped or failed stems are excluded.
 
     Args:
         path:        Path to the .dcmpack file.
         password:    Decryption password, or None for unprotected packs.
-        on_conflict: "skip" (default) leaves existing files untouched;
+        on_conflict: "skip" leaves existing files untouched;
                      "overwrite" replaces them unconditionally.
 
     Returns:
         ImportResult summarising imported / skipped / failed stems.
 
     Raises:
-        DcmPackPasswordError: Wrong or missing password (raised before iteration).
+        DcmPackPasswordError: Wrong or missing password.
         DcmPackCorruptError:  Archive is structurally invalid.
         DcmPackVersionError:  Unsupported manifest schema version.
     """
-    result = ImportResult()
+    result   = ImportResult()
+    manifest = None
 
     with open_pack(path, password) as zf:
         manifest = read_manifest(zf)
@@ -441,19 +450,77 @@ def extract_pack(
                 log.error("Failed to extract '%s': %s", item.stem, exc)
                 result.failed.append((item.stem, str(exc)))
 
+    if manifest and manifest.folders and (result.imported or result.skipped):
+        _apply_manifest_folders(
+            manifest,
+            imported_stems=set(result.imported),
+            skipped_stems=set(result.skipped),
+        )
+
     return result
 
 
+def _apply_manifest_folders(
+    manifest:       DcmPackManifest,
+    imported_stems: set[str],
+    skipped_stems:  set[str]            = frozenset(),
+    store:          "FolderStore | None" = None,
+) -> None:
+    """
+    Merge folder structure from the manifest into the local FolderStore.
+
+    Folder assignment rules per stem:
+    - Imported stems are always assigned to the manifest folder.
+    - Skipped stems are only assigned if they currently belong to no folder
+      locally, so existing local organisation is never overwritten.
+
+    Folders are matched by id for idempotency — re-importing the same pack
+    a second time neither duplicates folders nor reassigns stems.
+
+    Args:
+        manifest:       Parsed manifest containing folder metadata.
+        imported_stems: Stems that were freshly extracted this run.
+        skipped_stems:  Stems whose DCM already existed and was left in place.
+        store:          Optional FolderStore for testing (None = default path).
+    """
+    if not manifest.folders:
+        return
+
+    from core.folder_store import FolderStore
+    _store = store or FolderStore(json_path=_FOLDERS_JSON)
+
+    for pack_folder in manifest.folders:
+        stems_to_add = [
+            s for s in pack_folder.stems
+            if s in imported_stems
+            or (s in skipped_stems and _store.folder_for_stem(s) is None)
+        ]
+        if not stems_to_add:
+            continue
+        _store.upsert_folder(
+            folder_id=pack_folder.id,
+            name=pack_folder.name,
+            mandatory_labels=list(pack_folder.mandatory_labels),
+            stems=stems_to_add,
+        )
+        log.info(
+            "Merged folder '%s' (%d stem(s)) from pack.",
+            pack_folder.name, len(stems_to_add),
+        )
+
+
 def _extract_item(
-    zf: pyzipper.AESZipFile,
-    item: DcmPackItem,
+    zf:          pyzipper.AESZipFile,
+    item:        DcmPackItem,
     on_conflict: str,
-    result: ImportResult,
+    result:      ImportResult,
 ) -> None:
     dest_dcm = _UNLABELED_DIR / f"{item.stem}.dcm"
 
     if dest_dcm.exists() and on_conflict == "skip":
-        log.debug("Skipping '%s' — destination already exists.", item.stem)
+        log.debug("Skipping DCM for '%s' — destination already exists.", item.stem)
+        if item.labeled:
+            _import_labels_if_missing(zf, item)
         result.skipped.append(item.stem)
         return
 
@@ -469,14 +536,57 @@ def _extract_item(
     result.imported.append(item.stem)
 
 
+def _import_labels_if_missing(zf: pyzipper.AESZipFile, item: DcmPackItem) -> None:
+    """
+    Import labeled assets for a stem whose DCM already exists locally.
+
+    Writes raster, windowing, and annotation when:
+    - The local annotation JSON is absent, OR
+    - The pack annotation contains label names not present in the local one
+      (pack has broader coverage — local should be updated).
+
+    The local annotation is left untouched when it already covers everything
+    the pack provides, preserving work done locally.
+    """
+    local_label = _LABELED_DIR / f"{item.stem}.json"
+
+    if local_label.exists():
+        try:
+            local_names = {
+                s["label"]
+                for s in json.loads(local_label.read_text(encoding="utf-8")).get("shapes", [])
+                if "label" in s
+            }
+            try:
+                pack_raw   = zf.read(_label_arc_path(item.stem))
+                pack_names = {
+                    s["label"]
+                    for s in json.loads(pack_raw.decode("utf-8")).get("shapes", [])
+                    if "label" in s
+                }
+            except (KeyError, json.JSONDecodeError, UnicodeDecodeError):
+                return  # cannot read pack label — keep local
+            if not (pack_names - local_names):
+                return  # local already covers all pack labels
+        except Exception:
+            return  # cannot parse local label — keep it (conservative)
+
+    try:
+        _write_member(zf, _jpg_arc_path(item.stem),       _RASTER_DIR  / f"{item.stem}.jpg")
+        _write_member(zf, _windowing_arc_path(item.stem), _DATA_DIR    / f"{item.stem}.json")
+        _write_member(zf, _label_arc_path(item.stem),     _LABELED_DIR / f"{item.stem}.json")
+        _patch_extracted_label(item.stem)
+        log.info("Imported labels for existing DICOM '%s'.", item.stem)
+    except (DcmPackCorruptError, DcmPackPasswordError) as exc:
+        log.warning("Could not import labels for existing '%s': %s", item.stem, exc)
+
+
 def _write_member(zf: pyzipper.AESZipFile, arc_name: str, dest: Path) -> None:
     """Extract a single archive member to dest, creating parent directories."""
     try:
         data = zf.read(arc_name)
     except KeyError:
-        raise DcmPackCorruptError(
-            f"Required archive member '{arc_name}' is missing."
-        )
+        raise DcmPackCorruptError(f"Required archive member '{arc_name}' is missing.")
     except RuntimeError as exc:
         raise DcmPackPasswordError(
             f"Cannot decrypt '{arc_name}' — verify the password."
@@ -522,12 +632,13 @@ def _find_dicom_source(stem: str) -> Path | None:
 
 
 def create_pack(
-    stems: list[str],
-    dest_path: Path,
-    password: Optional[str] = None,
-    author: str = "",
-    description: str = "",
-    tags: list[str] | None = None,
+    stems:        list[str],
+    dest_path:    Path,
+    password:     Optional[str]          = None,
+    author:       str                    = "",
+    description:  str                    = "",
+    tags:         list[str] | None       = None,
+    pack_folders: list[PackFolder] | None = None,
 ) -> Path:
     """
     Bundle a list of DICOM stems into a new .dcmpack archive.
@@ -542,9 +653,12 @@ def create_pack(
     original bytes are bundled as-is with a warning.
 
     Args:
-        stems:     File stems to include (e.g. ["brain_001", "ct_chest"]).
-        dest_path: Destination .dcmpack path; parent directories are created.
-        password:  Optional AES-256 encryption password.
+        stems:        File stems to include (e.g. ["brain_001", "ct_chest"]).
+        dest_path:    Destination .dcmpack path.
+        password:     Optional AES-256 encryption password.
+        pack_folders: Optional folder metadata to embed in the manifest.
+                      Each PackFolder's stems are filtered to only those
+                      present in the pack before bundling.
 
     Returns:
         Resolved absolute path of the created archive.
@@ -566,6 +680,22 @@ def create_pack(
         items.append(DcmPackItem(stem=stem, labeled=labeled))
         sources.append(dcm_src)
 
+    # Filter pack_folders to stems actually being packed.
+    stems_set = set(stems)
+    filtered_folders: tuple[PackFolder, ...] = ()
+    if pack_folders:
+        filtered = []
+        for pf in pack_folders:
+            present = tuple(s for s in pf.stems if s in stems_set)
+            if present:
+                filtered.append(PackFolder(
+                    id=pf.id,
+                    name=pf.name,
+                    mandatory_labels=pf.mandatory_labels,
+                    stems=present,
+                ))
+        filtered_folders = tuple(filtered)
+
     manifest = DcmPackManifest(
         schema_version=_SCHEMA_VERSION,
         pack_name=dest_path.stem,
@@ -575,6 +705,7 @@ def create_pack(
         author=author,
         description=description,
         tags=tuple(tags or []),
+        folders=filtered_folders,
     )
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -589,8 +720,8 @@ def create_pack(
                 _add_labeled_patched(zf, item.stem)
 
     log.info(
-        "Created pack '%s' — %d item(s), encrypted=%s.",
-        dest_path.name, len(items), bool(password),
+        "Created pack '%s' — %d item(s), %d folder(s), encrypted=%s.",
+        dest_path.name, len(items), len(filtered_folders), bool(password),
     )
     return dest_path.resolve()
 
