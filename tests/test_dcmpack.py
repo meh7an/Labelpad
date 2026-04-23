@@ -662,7 +662,7 @@ class TestExtractPack:
 
         # imagePath must be patched to the absolute raster path on this machine.
         label_data = json.loads((lb / "brain_01.json").read_bytes())
-        assert label_data["imagePath"] == str(rs / "brain_01.jpg")
+        assert label_data["imagePath"] == (rs / "brain_01.jpg").as_posix()
 
     def test_dcm_and_raster_contents_are_intact(self, tmp_path, dirs):
         ul, rs, *_ = dirs
@@ -777,7 +777,7 @@ class TestRoundTrip:
         # patched twice: to ./ct_brain.jpg during packing, then to the
         # absolute raster path on extraction. Verify the final state.
         label_data = json.loads((lb / "ct_brain.json").read_bytes())
-        assert label_data["imagePath"]  == str(rs / "ct_brain.jpg")
+        assert label_data["imagePath"]  == (rs / "ct_brain.jpg").as_posix()
         assert label_data["shapes"]     == []
         assert label_data["imageWidth"] == 512
 

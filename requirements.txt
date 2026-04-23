@@ -3,7 +3,6 @@ numpy==2.4.4
 Pillow==12.2.0
 PyQt5==5.15.11
 pyQt5-sip==12.18.0
-PyQt5-Qt5==5.15.2
 labelme==6.1.0
 pytest==9.0.3
 pyinstaller==6.19.0

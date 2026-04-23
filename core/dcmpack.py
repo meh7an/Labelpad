@@ -314,7 +314,11 @@ def patch_label_imagepath(json_path: Path, new_image_path: Path | str) -> None:
             f"Cannot read label annotation '{json_path.name}': {exc}"
         ) from exc
 
-    patched = _patch_label_bytes(raw, str(new_image_path))
+    if isinstance(new_image_path, Path):
+        path_str = new_image_path.as_posix()
+    else:
+        path_str = str(new_image_path)
+    patched = _patch_label_bytes(raw, path_str)
 
     try:
         json_path.write_bytes(patched)

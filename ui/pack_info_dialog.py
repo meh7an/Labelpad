@@ -75,7 +75,11 @@ def _format_datetime(iso_str: str) -> str:
         dt = datetime.fromisoformat(iso_str)
         # Normalise to UTC for display consistency across machines.
         dt_utc = dt.astimezone(timezone.utc)
-        return dt_utc.strftime("%-d %B %Y  \u00b7  %H:%M UTC")
+        day = str(dt_utc.day)
+        month = dt_utc.strftime("%B")
+        year = dt_utc.strftime("%Y")
+        time = dt_utc.strftime("%H:%M")
+        return f"{day} {month} {year}  \u00b7  {time} UTC"
     except (ValueError, OSError):
         return iso_str
 
@@ -170,7 +174,8 @@ class PackInfoDialog(QDialog):
         body.addWidget(self._build_metadata_panel())
         body.addWidget(self._divider())
         body.addWidget(self._section_label("CONTENTS"))
-        body.addWidget(self._build_item_list())
+        self._file_list = self._build_item_list()
+        body.addWidget(self._file_list)
         body.addWidget(self._divider())
         body.addLayout(self._build_button_row())
 

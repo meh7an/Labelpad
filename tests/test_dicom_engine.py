@@ -137,7 +137,7 @@ class TestSuggestSliderRange:
 
 class TestMetadataStore:
     def test_round_trip(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(metadata_store, "_DATA_DIR", tmp_path)
+        monkeypatch.setattr(metadata_store, "DATA_DIR", tmp_path)
 
         dcm_path = Path("Unlabeled/brain_scan.dcm")
         params = WindowingParams(center=40.0, width=80.0)
@@ -150,19 +150,19 @@ class TestMetadataStore:
         assert loaded.width  == pytest.approx(80.0)
 
     def test_load_missing_returns_none(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(metadata_store, "_DATA_DIR", tmp_path)
+        monkeypatch.setattr(metadata_store, "DATA_DIR", tmp_path)
         result = metadata_store.load_windowing(Path("Unlabeled/nonexistent.dcm"))
         assert result is None
 
     def test_has_saved_windowing(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(metadata_store, "_DATA_DIR", tmp_path)
+        monkeypatch.setattr(metadata_store, "DATA_DIR", tmp_path)
         dcm_path = Path("Unlabeled/test.dcm")
         assert not metadata_store.has_saved_windowing(dcm_path)
         metadata_store.save_windowing(dcm_path, WindowingParams(center=0.0, width=400.0))
         assert metadata_store.has_saved_windowing(dcm_path)
 
     def test_corrupted_json_returns_none(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(metadata_store, "_DATA_DIR", tmp_path)
+        monkeypatch.setattr(metadata_store, "DATA_DIR", tmp_path)
         dcm_path = Path("Unlabeled/bad.dcm")
         (tmp_path / "bad.json").write_text("{ not valid json }", encoding="utf-8")
         result = metadata_store.load_windowing(dcm_path)
