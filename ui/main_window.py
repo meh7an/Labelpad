@@ -1,6 +1,6 @@
 """
 ui/main_window.py
-Application shell -- file browser, status tracking, and workflow orchestration.
+Application shell — file browser, status tracking, and workflow orchestration.
 """
 
 import logging
@@ -10,6 +10,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QColor, QKeySequence
 from PyQt5.QtWidgets import (
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -27,11 +28,20 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from core.dcmpack import (
+    DcmPackCorruptError,
+    DcmPackPasswordError,
+    DcmPackVersionError,
+    ImportResult,
+    extract_pack,
+    peek_is_password_protected,
+)
 from core.dicom_handler import load_dicom, DicomReadError, raster_path_for
 from core import metadata_store
 from core.paths import UNLABELED_DIR, RASTER_DIR, LABELED_DIR
 from ui.dicom_viewer import DicomViewer
 from ui.error_dialog import AppDialog
+from ui.password_dialog import ask_password
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +76,7 @@ def _resolve_status(dcm_path: Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Background DICOM loader
+# Background workers
 # ---------------------------------------------------------------------------
 
 class _DicomLoader(QObject):
@@ -82,6 +92,34 @@ class _DicomLoader(QObject):
             self.finished.emit(load_dicom(self._path))
         except DicomReadError as exc:
             self.failed.emit(str(exc))
+
+
+class _PackExtractor(QObject):
+    """
+    Runs extract_pack() on a background thread and marshals the result
+    back to the main thread via Qt signals.
+
+    Mirrors the _DicomLoader pattern: constructed on the main thread,
+    moved to a QThread, connected via signals, never touched directly
+    after start() is called on the thread.
+    """
+
+    finished = pyqtSignal(object)  # ImportResult
+    failed   = pyqtSignal(str)     # human-readable error message
+
+    def __init__(self, path: Path, password: str | None) -> None:
+        super().__init__()
+        self._path     = path
+        self._password = password
+
+    def run(self) -> None:
+        try:
+            result = extract_pack(self._path, self._password, on_conflict="skip")
+            self.finished.emit(result)
+        except (DcmPackPasswordError, DcmPackCorruptError, DcmPackVersionError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(f"Unexpected error during extraction: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +169,8 @@ class _DetailPanel(QWidget):
 
         self._rows: dict[str, QLabel] = {}
         for key in ("File", "Status", "Windowing", "Raster Export", "Annotation"):
-            row_w = QWidget()
-            row_l = QHBoxLayout(row_w)
+            row_w  = QWidget()
+            row_l  = QHBoxLayout(row_w)
             row_l.setContentsMargins(0, 0, 0, 0)
             row_l.setSpacing(12)
 
@@ -205,7 +243,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self._loader_thread: QThread | None = None
+        self._loader_thread:    QThread | None = None
+        self._extractor_thread: QThread | None = None
         self._active_session = None
         self._build_ui()
         self._setup_shortcuts()
@@ -254,7 +293,7 @@ class MainWindow(QMainWindow):
         )
         layout = QHBoxLayout(header)
         layout.setContentsMargins(20, 0, 20, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         app_name = QLabel("Labelpad")
         app_name.setStyleSheet(
@@ -274,17 +313,52 @@ class MainWindow(QMainWindow):
         refresh_btn.clicked.connect(self._scan_unlabeled)
         layout.addWidget(refresh_btn)
 
+        # Export Pack — secondary action.
+        export_btn = QPushButton("Export Pack...")
+        export_btn.setCursor(Qt.PointingHandCursor)
+        export_btn.setFixedHeight(30)
+        export_btn.setToolTip("Bundle DICOM files into a .dcmpack archive  (Ctrl+E)")
+        export_btn.setStyleSheet(
+            "QPushButton { background: #1C2333; border: 1px solid #2E3A50;"
+            "border-radius: 4px; color: #8A98AA; font-size: 11px; padding: 0 12px; }"
+            "QPushButton:hover { border-color: #4A7FB5; color: #D4D8DE; }"
+            "QPushButton:pressed { background: #1A2740; }"
+        )
+        export_btn.clicked.connect(self._export_pack)
+        layout.addWidget(export_btn)
+
+        # Import Pack — secondary action, placed left of the primary import.
+        pack_btn = QPushButton("Import Pack")
+        pack_btn.setCursor(Qt.PointingHandCursor)
+        pack_btn.setFixedHeight(30)
+        pack_btn.setToolTip("Import a .dcmpack archive  (Ctrl+Shift+I)")
+        pack_btn.setStyleSheet(
+            "QPushButton { background: #1C2333; border: 1px solid #2E3A50;"
+            "border-radius: 4px; color: #8A98AA; font-size: 11px; padding: 0 14px; }"
+            "QPushButton:hover { border-color: #4A7FB5; color: #D4D8DE; }"
+            "QPushButton:pressed { background: #1A2740; }"
+            "QPushButton:disabled { color: #3E4A5C; border-color: #1E2530; }"
+        )
+        pack_btn.clicked.connect(self._import_dcmpack)
+        layout.addWidget(pack_btn)
+        self._pack_btn = pack_btn
+
+        # Import DICOMs — primary action.
         import_btn = QPushButton("Import DICOMs")
         import_btn.setCursor(Qt.PointingHandCursor)
         import_btn.setFixedHeight(30)
+        import_btn.setToolTip("Import individual DICOM files  (Ctrl+I)")
         import_btn.setStyleSheet(
             "QPushButton { background: #1F5FAD; border: 1px solid #2A7AD4;"
             "border-radius: 4px; color: #FFFFFF; font-size: 11px;"
             "font-weight: 600; padding: 0 14px; }"
             "QPushButton:hover { background: #2A7AD4; }"
+            "QPushButton:disabled { background: #132540; border-color: #1A3560;"
+            "color: #3E5A80; }"
         )
         import_btn.clicked.connect(self._import_dicoms)
         layout.addWidget(import_btn)
+        self._import_btn = import_btn
 
         return header
 
@@ -371,11 +445,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_shortcuts(self) -> None:
-        QShortcut(QKeySequence("F5"),     self).activated.connect(self._scan_unlabeled)
-        QShortcut(QKeySequence("Ctrl+I"), self).activated.connect(self._import_dicoms)
-        QShortcut(QKeySequence("Return"), self).activated.connect(self._open_selected)
-        QShortcut(QKeySequence("Down"),   self).activated.connect(self._select_next)
-        QShortcut(QKeySequence("Up"),     self).activated.connect(self._select_prev)
+        QShortcut(QKeySequence("F5"),           self).activated.connect(self._scan_unlabeled)
+        QShortcut(QKeySequence("Ctrl+I"),       self).activated.connect(self._import_dicoms)
+        QShortcut(QKeySequence("Ctrl+E"),       self).activated.connect(self._export_pack)
+        QShortcut(QKeySequence("Ctrl+Shift+I"), self).activated.connect(self._import_dcmpack)
+        QShortcut(QKeySequence("Return"),       self).activated.connect(self._open_selected)
+        QShortcut(QKeySequence("Down"),         self).activated.connect(self._select_next)
+        QShortcut(QKeySequence("Up"),           self).activated.connect(self._select_prev)
 
     def _open_selected(self) -> None:
         item = self._file_list.currentItem()
@@ -393,7 +469,7 @@ class MainWindow(QMainWindow):
             self._file_list.setCurrentRow(row - 1)
 
     # ------------------------------------------------------------------
-    # Import
+    # Import DICOMs (original flow, unchanged)
     # ------------------------------------------------------------------
 
     def _import_dicoms(self) -> None:
@@ -411,9 +487,9 @@ class MainWindow(QMainWindow):
         progress.setMinimumWidth(360)
         progress.setWindowModality(Qt.WindowModal)
 
-        copied = 0
+        copied  = 0
         skipped = 0
-        errors = []
+        errors: list[str] = []
 
         for i, src in enumerate(paths):
             progress.setValue(i)
@@ -454,6 +530,155 @@ class MainWindow(QMainWindow):
             )
 
     # ------------------------------------------------------------------
+    # Import DCMPACK (M4)
+    # ------------------------------------------------------------------
+
+    def _import_dcmpack(self) -> None:
+        """
+        Full DCMPACK import flow:
+          1. File picker filtered to *.dcmpack
+          2. Peek password protection without opening the archive
+          3. Prompt for password if needed (cancel aborts the whole import)
+          4. Spawn a background thread for extraction
+          5. Report results via status bar and optional warning dialog
+        """
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import DCMPACK Archive",
+            str(Path.home()),
+            "DCMPACK Files (*.dcmpack *.DCMPACK);;All Files (*)",
+        )
+        if not path_str:
+            return
+
+        path     = Path(path_str)
+        password: str | None = None
+
+        if peek_is_password_protected(path):
+            password = ask_password(self, mode="open")
+            if password is None:
+                # User dismissed the password dialog — abort silently.
+                self._status_bar.showMessage("Import cancelled.")
+                return
+
+        self._run_pack_extraction(path, password)
+
+    # ------------------------------------------------------------------
+    # Export DCMPACK (M5)
+    # ------------------------------------------------------------------
+
+    def _export_pack(self) -> None:
+        """Open the pack export dialog and report the result in the status bar."""
+        from ui.pack_export_dialog import PackExportDialog
+        dlg = PackExportDialog(self)
+        from main import _apply_dark_titlebar
+        _apply_dark_titlebar(dlg)
+        if dlg.exec_() == QDialog.Accepted:
+            created = dlg.created_path()
+            if created:
+                self._status_bar.showMessage(f"Pack exported  —  {created.name}")
+                log.info("Pack exported to %s.", created)
+
+    def _run_pack_extraction(self, path: Path, password: str | None) -> None:
+        """Disable the UI, show a busy progress dialog, and start the extractor thread."""
+        self._status_bar.showMessage(f"Extracting {path.name}...")
+        self._set_import_controls_enabled(False)
+
+        progress = QProgressDialog(
+            f"Extracting contents of  {path.name}…",
+            None,   # no cancel button — extraction is atomic
+            0, 0,   # indeterminate (busy) indicator
+            self,
+        )
+        progress.setWindowTitle("Importing Pack")
+        progress.setMinimumWidth(400)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+
+        self._pack_extractor = _PackExtractor(path, password)
+        self._extractor_thread = QThread(self)
+        self._pack_extractor.moveToThread(self._extractor_thread)
+
+        self._extractor_thread.started.connect(self._pack_extractor.run)
+
+        self._pack_extractor.finished.connect(
+            lambda result: self._on_pack_extracted(result, path, progress)
+        )
+        self._pack_extractor.failed.connect(
+            lambda msg: self._on_pack_extract_failed(msg, path, progress)
+        )
+
+        # Thread teardown — same pattern as _DicomLoader
+        self._pack_extractor.finished.connect(self._extractor_thread.quit)
+        self._pack_extractor.failed.connect(self._extractor_thread.quit)
+        self._extractor_thread.finished.connect(self._extractor_thread.deleteLater)
+
+        self._extractor_thread.start()
+
+    def _on_pack_extracted(
+        self,
+        result: ImportResult,
+        path: Path,
+        progress: QProgressDialog,
+    ) -> None:
+        """Called on the main thread when extraction completes successfully."""
+        progress.close()
+        self._set_import_controls_enabled(True)
+        self._extractor_thread = None
+
+        self._scan_unlabeled()
+        self._status_bar.showMessage(f"{path.name}  —  {result.summary}")
+
+        if result.failed:
+            failed_lines = "\n".join(
+                f"  {stem}: {reason}" for stem, reason in result.failed
+            )
+            AppDialog.warning(
+                self,
+                "Import Incomplete",
+                f"Most items were imported, but {len(result.failed)} "
+                f"item(s) in '{path.name}' could not be extracted:\n\n"
+                f"{failed_lines}",
+            )
+
+    def _on_pack_extract_failed(
+        self,
+        message: str,
+        path: Path,
+        progress: QProgressDialog,
+    ) -> None:
+        """Called on the main thread when extraction fails at the archive level."""
+        progress.close()
+        self._set_import_controls_enabled(True)
+        self._extractor_thread = None
+
+        self._status_bar.showMessage(f"Failed to import {path.name}.")
+
+        # Surface a more actionable message for the most common failure cause.
+        if "password" in message.lower():
+            AppDialog.error(
+                self,
+                "Wrong Password",
+                f"The password entered for '{path.name}' is incorrect.\n\n"
+                "Please try importing again with the correct password.",
+            )
+        else:
+            AppDialog.error(
+                self,
+                "Pack Import Failed",
+                f"Could not extract '{path.name}'.\n\n{message}",
+            )
+
+    def _set_import_controls_enabled(self, enabled: bool) -> None:
+        """
+        Enable or disable the header import buttons during a background
+        extraction, preventing concurrent imports on the same thread pool.
+        The rest of the window (file list, viewer) remains interactive.
+        """
+        self._pack_btn.setEnabled(enabled)
+        self._import_btn.setEnabled(enabled)
+
+    # ------------------------------------------------------------------
     # File scanning
     # ------------------------------------------------------------------
 
@@ -475,7 +700,7 @@ class MainWindow(QMainWindow):
         n = len(dcm_files)
         self._count_label.setText(f"{n} file{'s' if n != 1 else ''}")
         self._status_bar.showMessage(f"Found {n} DICOM file(s)")
-        log.info("Scanned Unlabeled/ -- %d file(s) found.", n)
+        log.info("Scanned Unlabeled/ — %d file(s) found.", n)
 
     # ------------------------------------------------------------------
     # Slots
@@ -492,7 +717,7 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(f"Loading {dcm_path.name}...")
         self.setEnabled(False)
 
-        self._loader = _DicomLoader(dcm_path)
+        self._loader      = _DicomLoader(dcm_path)
         self._loader_thread = QThread(self)
         self._loader.moveToThread(self._loader_thread)
 
@@ -530,7 +755,7 @@ class MainWindow(QMainWindow):
             self._active_session = launch_labelme(
                 dcm_path,
                 on_started=lambda pid: self._status_bar.showMessage(
-                    f"LabelMe running (PID {pid}) -- annotate and save to finish."
+                    f"LabelMe running (PID {pid}) — annotate and save to finish."
                 ),
                 on_exit=lambda: self._on_labelme_exit(dcm_path),
                 on_error=lambda msg: self._on_labelme_error(msg),
@@ -565,4 +790,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self._active_session:
             self._active_session.terminate()
+
+        if self._extractor_thread and self._extractor_thread.isRunning():
+            log.info("Waiting for pack extractor thread to finish before closing.")
+            self._extractor_thread.quit()
+            self._extractor_thread.wait(3000)
+
         event.accept()

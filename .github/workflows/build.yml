@@ -7,10 +7,39 @@ on:
 
 jobs:
   # ─────────────────────────────────────────────
+  # Tests (headless — no display server needed)
+  # ─────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Pillow system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            libjpeg-dev zlib1g-dev libpng-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest tests/ -v --tb=short
+
+  # ─────────────────────────────────────────────
   # Windows: EXE installer + portable ZIP
   # ─────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
+    needs: test
     permissions:
       contents: write
     steps:
@@ -85,6 +114,7 @@ jobs:
   # ─────────────────────────────────────────────
   build-macos:
     runs-on: macos-latest
+    needs: test
     permissions:
       contents: write
     steps:

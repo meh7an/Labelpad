@@ -2,7 +2,12 @@ pydicom==2.4.5
 numpy==2.4.4
 Pillow==12.2.0
 PyQt5==5.15.11
+PyQt5-sip==12.11.0
+PyQt5-Qt5==5.15.18
 labelme==6.1.0
 pytest==9.0.3
 pyinstaller==6.19.0
 opencv-python-headless==4.10.0.84
+pyzipper>=0.3.6
+pytest=9.0.3
+pyQt5-sip=12.18.0
