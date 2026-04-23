@@ -15,6 +15,7 @@ Workflow
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPlainTextEdit,
     QProgressDialog,
     QPushButton,
     QVBoxLayout,
@@ -57,8 +59,29 @@ _C_MUTED  = "#8A98AA"
 _C_DIMMED = "#5A7FA8"
 _C_ERROR  = "#A83040"
 
-_MIN_PW_LEN        = 4
+_MIN_PW_LEN         = 4
 _INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _parse_tags(raw: str) -> list[str]:
+    """
+    Split a comma-separated tag string into a clean list.
+    Strips surrounding whitespace from each entry and drops empty tokens.
+
+    Examples:
+        "CT, head,  cohort-A"  → ["CT", "head", "cohort-A"]
+        "  ,  "                → []
+        ""                     → []
+    """
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def _default_author() -> str:
+    """Return the OS login name, or an empty string if unavailable."""
+    try:
+        return os.getlogin()
+    except OSError:
+        return ""
 
 # ---------------------------------------------------------------------------
 # File status helpers (local — avoids importing from main_window)
@@ -305,6 +328,55 @@ class PackExportDialog(QDialog):
             f"QLineEdit:focus {{ border-color: {_C_ACCENT}; }}"
         )
         body.addWidget(self._name_edit)
+
+        body.addWidget(self._divider())
+
+        # --- Metadata section ---
+        body.addWidget(self._section_label("METADATA"))
+
+        _field_style = (
+            f"background-color: {_C_INPUT}; border: 1px solid {_C_BORDER};"
+            f"border-radius: 4px; padding: 4px 10px;"
+            f"color: {_C_FG}; font-size: 13px;"
+        )
+        _field_focus = f"border-color: {_C_ACCENT};"
+
+        author_lbl = QLabel("Author")
+        author_lbl.setStyleSheet(f"color: {_C_DIMMED}; font-size: 11px;")
+        self._author_edit = QLineEdit()
+        self._author_edit.setText(_default_author())
+        self._author_edit.setPlaceholderText("Your name or organisation")
+        self._author_edit.setMinimumHeight(32)
+        self._author_edit.setStyleSheet(
+            f"QLineEdit {{ {_field_style} }}"
+            f"QLineEdit:focus {{ {_field_focus} }}"
+        )
+        body.addWidget(author_lbl)
+        body.addWidget(self._author_edit)
+
+        desc_lbl = QLabel("Description")
+        desc_lbl.setStyleSheet(f"color: {_C_DIMMED}; font-size: 11px;")
+        self._desc_edit = QPlainTextEdit()
+        self._desc_edit.setPlaceholderText("Optional description of this pack\u2026")
+        self._desc_edit.setFixedHeight(72)   # ~3 lines
+        self._desc_edit.setStyleSheet(
+            f"QPlainTextEdit {{ {_field_style} }}"
+            f"QPlainTextEdit:focus {{ {_field_focus} }}"
+        )
+        body.addWidget(desc_lbl)
+        body.addWidget(self._desc_edit)
+
+        tags_lbl = QLabel("Tags")
+        tags_lbl.setStyleSheet(f"color: {_C_DIMMED}; font-size: 11px;")
+        self._tags_edit = QLineEdit()
+        self._tags_edit.setPlaceholderText("e.g.  CT,  head,  cohort-A  (comma-separated)")
+        self._tags_edit.setMinimumHeight(32)
+        self._tags_edit.setStyleSheet(
+            f"QLineEdit {{ {_field_style} }}"
+            f"QLineEdit:focus {{ {_field_focus} }}"
+        )
+        body.addWidget(tags_lbl)
+        body.addWidget(self._tags_edit)
 
         body.addWidget(self._divider())
 
@@ -604,8 +676,15 @@ class PackExportDialog(QDialog):
         progress.show()
         QApplication.processEvents()  # flush paint events before blocking call
 
+        author      = self._author_edit.text().strip()
+        description = self._desc_edit.toPlainText().strip()
+        tags        = _parse_tags(self._tags_edit.text())
+
         try:
-            self._created_path = create_pack(stems, dest, password=password)
+            self._created_path = create_pack(
+                stems, dest, password=password,
+                author=author, description=description, tags=tags,
+            )
         except DcmPackError as exc:
             progress.close()
             self._show_error(f"Export failed: {exc}")

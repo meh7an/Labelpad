@@ -152,14 +152,129 @@ class TestDcmPackManifest:
             created_at="2026-04-23T00:00:00+00:00",
             password_protected=False,
             items=(DcmPackItem("a", False),),
+            author="Mehran",
+            description="April cohort",
+            tags=("CT", "head"),
         )
         assert m.pack_name           == "batch_01"
         assert m.schema_version      == 1
         assert m.password_protected  is False
         assert len(m.items)          == 1
+        assert m.author              == "Mehran"
+        assert m.description         == "April cohort"
+        assert m.tags                == ("CT", "head")
+
+    def test_metadata_fields_default_to_empty(self):
+        m = DcmPackManifest(1, "p", "", False, ())
+        assert m.author      == ""
+        assert m.description == ""
+        assert m.tags        == ()
 
     def test_empty_items_tuple(self):
         assert DcmPackManifest(1, "p", "", False, ()).items == ()
+
+
+# ---------------------------------------------------------------------------
+# Manifest metadata field round-trips
+# ---------------------------------------------------------------------------
+
+class TestManifestMetadataFields:
+    def test_metadata_survives_write_read_cycle(self, tmp_path):
+        pack = _plain_pack(
+            tmp_path / "p.dcmpack",
+            json.dumps({
+                "schema_version": 1,
+                "pack_name":          "meta_test",
+                "created_at":         "2026-04-23T00:00:00+00:00",
+                "password_protected": False,
+                "author":             "Mehran",
+                "description":        "April cohort",
+                "tags":               ["CT", "head", "cohort-A"],
+                "items":              [],
+            }).encode(),
+        )
+        with open_pack(pack) as zf:
+            m = read_manifest(zf)
+        assert m.author      == "Mehran"
+        assert m.description == "April cohort"
+        assert m.tags        == ("CT", "head", "cohort-A")
+
+    def test_v1_pack_without_metadata_fields_parses_cleanly(self, tmp_path):
+        """Backward-compat: old packs that omit new fields must not raise."""
+        legacy = json.dumps({
+            "schema_version": 1,
+            "pack_name":          "legacy",
+            "created_at":         "2025-01-01T00:00:00+00:00",
+            "password_protected": False,
+            "items":              [],
+        }).encode()
+        pack = _plain_pack(tmp_path / "old.dcmpack", legacy)
+        with open_pack(pack) as zf:
+            m = read_manifest(zf)
+        assert m.author      == ""
+        assert m.description == ""
+        assert m.tags        == ()
+
+    def test_tags_is_always_a_tuple(self, tmp_path):
+        pack = _plain_pack(
+            tmp_path / "p.dcmpack",
+            json.dumps({
+                "schema_version": 1, "pack_name": "t",
+                "created_at": "", "password_protected": False,
+                "tags": ["a", "b"], "items": [],
+            }).encode(),
+        )
+        with open_pack(pack) as zf:
+            m = read_manifest(zf)
+        assert isinstance(m.tags, tuple)
+
+    def test_empty_tags_list_in_json_gives_empty_tuple(self, tmp_path):
+        pack = _plain_pack(
+            tmp_path / "p.dcmpack",
+            json.dumps({
+                "schema_version": 1, "pack_name": "t",
+                "created_at": "", "password_protected": False,
+                "tags": [], "items": [],
+            }).encode(),
+        )
+        with open_pack(pack) as zf:
+            m = read_manifest(zf)
+        assert m.tags == ()
+
+    def test_create_pack_writes_metadata_into_manifest(self, tmp_path, dirs):
+        ul, *_ = dirs
+        _write(ul / "scan.dcm", _FAKE_DCM)
+
+        pack = create_pack(
+            ["scan"], tmp_path / "out.dcmpack",
+            author="Dr. Test",
+            description="A test cohort.",
+            tags=["MR", "brain"],
+        )
+        with open_pack(pack) as zf:
+            m = read_manifest(zf)
+
+        assert m.author      == "Dr. Test"
+        assert m.description == "A test cohort."
+        assert m.tags        == ("MR", "brain")
+
+    def test_create_pack_defaults_leave_metadata_empty(self, tmp_path, dirs):
+        ul, *_ = dirs
+        _write(ul / "scan.dcm", _FAKE_DCM)
+        pack = create_pack(["scan"], tmp_path / "out.dcmpack")
+        with open_pack(pack) as zf:
+            m = read_manifest(zf)
+        assert m.author      == ""
+        assert m.description == ""
+        assert m.tags        == ()
+
+    def test_none_tags_arg_treated_as_empty(self, tmp_path, dirs):
+        ul, *_ = dirs
+        _write(ul / "scan.dcm", _FAKE_DCM)
+        pack = create_pack(["scan"], tmp_path / "out.dcmpack", tags=None)
+        with open_pack(pack) as zf:
+            m = read_manifest(zf)
+        assert m.tags == ()
 
 
 # ---------------------------------------------------------------------------

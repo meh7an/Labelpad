@@ -94,6 +94,10 @@ class DcmPackManifest:
     created_at:         str
     password_protected: bool
     items:              tuple[DcmPackItem, ...]
+    # Optional metadata — absent in v1 packs; defaults applied by _parse_manifest.
+    author:      str             = ""
+    description: str             = ""
+    tags:        tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -192,12 +196,16 @@ def _parse_manifest(raw: bytes) -> DcmPackManifest:
             DcmPackItem(stem=str(i["stem"]), labeled=bool(i["labeled"]))
             for i in data.get("items", [])
         )
+        tags = tuple(str(t) for t in data.get("tags", []))
         return DcmPackManifest(
             schema_version=version,
             pack_name=str(data["pack_name"]),
             created_at=str(data.get("created_at", "")),
             password_protected=bool(data.get("password_protected", False)),
             items=items,
+            author=str(data.get("author", "")),
+            description=str(data.get("description", "")),
+            tags=tags,
         )
     except (KeyError, TypeError) as exc:
         raise DcmPackCorruptError(
@@ -239,6 +247,9 @@ def _write_manifest(zf: pyzipper.AESZipFile, manifest: DcmPackManifest) -> None:
         "pack_name":          manifest.pack_name,
         "created_at":         manifest.created_at,
         "password_protected": manifest.password_protected,
+        "author":             manifest.author,
+        "description":        manifest.description,
+        "tags":               list(manifest.tags),
         "items": [
             {"stem": item.stem, "labeled": item.labeled}
             for item in manifest.items
@@ -510,6 +521,9 @@ def create_pack(
     stems: list[str],
     dest_path: Path,
     password: Optional[str] = None,
+    author: str = "",
+    description: str = "",
+    tags: list[str] | None = None,
 ) -> Path:
     """
     Bundle a list of DICOM stems into a new .dcmpack archive.
@@ -554,6 +568,9 @@ def create_pack(
         created_at=datetime.now(tz=timezone.utc).isoformat(),
         password_protected=bool(password),
         items=tuple(items),
+        author=author,
+        description=description,
+        tags=tuple(tags or []),
     )
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)

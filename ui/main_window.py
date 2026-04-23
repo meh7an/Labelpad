@@ -34,13 +34,16 @@ from core.dcmpack import (
     DcmPackVersionError,
     ImportResult,
     extract_pack,
+    open_pack,
     peek_is_password_protected,
+    read_manifest,
 )
 from core.dicom_handler import load_dicom, DicomReadError, raster_path_for
 from core import metadata_store
 from core.paths import UNLABELED_DIR, RASTER_DIR, LABELED_DIR
 from ui.dicom_viewer import DicomViewer
 from ui.error_dialog import AppDialog
+from ui.pack_info_dialog import show_pack_info
 from ui.password_dialog import ask_password
 
 log = logging.getLogger(__name__)
@@ -534,14 +537,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _import_dcmpack(self) -> None:
-        """
-        Full DCMPACK import flow:
-          1. File picker filtered to *.dcmpack
-          2. Peek password protection without opening the archive
-          3. Prompt for password if needed (cancel aborts the whole import)
-          4. Spawn a background thread for extraction
-          5. Report results via status bar and optional warning dialog
-        """
+        """Open a file picker and delegate to _open_pack_from_path."""
         path_str, _ = QFileDialog.getOpenFileName(
             self,
             "Import DCMPACK Archive",
@@ -550,16 +546,41 @@ class MainWindow(QMainWindow):
         )
         if not path_str:
             return
+        self._open_pack_from_path(Path(path_str))
 
-        path     = Path(path_str)
+    def _open_pack_from_path(self, path: Path) -> None:
+        """
+        Single entry point for every pack-open trigger: the Import Pack
+        button, OS double-click association (M5), and any future caller.
+
+        Flow:
+            1. Peek for password protection without opening the archive.
+            2. Prompt for password if needed — cancel aborts silently.
+            3. Open the archive and read the manifest.
+            4. Show PackInfoDialog — cancel aborts silently.
+            5. Hand off to _run_pack_extraction for background extraction.
+
+        Args:
+            path: Absolute path to the .dcmpack file to open.
+        """
         password: str | None = None
 
         if peek_is_password_protected(path):
             password = ask_password(self, mode="open")
             if password is None:
-                # User dismissed the password dialog — abort silently.
                 self._status_bar.showMessage("Import cancelled.")
                 return
+
+        try:
+            with open_pack(path, password) as zf:
+                manifest = read_manifest(zf)
+        except (DcmPackPasswordError, DcmPackCorruptError, DcmPackVersionError) as exc:
+            AppDialog.error(self, "Cannot Read Pack", str(exc))
+            return
+
+        if not show_pack_info(self, manifest, path):
+            self._status_bar.showMessage("Import cancelled.")
+            return
 
         self._run_pack_extraction(path, password)
 
