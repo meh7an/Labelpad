@@ -692,6 +692,13 @@ class MainWindow(QMainWindow):
         if not dcm_files:
             self._count_label.setText("0 files")
             self._status_bar.showMessage("No DICOM files found in Unlabeled/")
+            placeholder = QListWidgetItem(
+                "No files yet.\nImport DICOMs or a .dcmpack to get started."
+            )
+            placeholder.setFlags(Qt.NoItemFlags)
+            placeholder.setForeground(QColor("#2E3A50"))
+            placeholder.setTextAlignment(Qt.AlignCenter)
+            self._file_list.addItem(placeholder)
             return
 
         for dcm_path in dcm_files:
