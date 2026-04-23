@@ -76,10 +76,24 @@ jobs:
 
       - name: Build installer with NSIS
         run: |
-          $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
-          if (-not (Test-Path $makensis)) {
-            $makensis = "C:\Program Files\NSIS\makensis.exe"
+          $makensisCmd = Get-Command makensis.exe -ErrorAction SilentlyContinue
+          if ($makensisCmd) {
+            $makensis = $makensisCmd.Source
+          } else {
+            $candidates = @(
+              "C:\Program Files (x86)\NSIS\makensis.exe",
+              "C:\Program Files\NSIS\makensis.exe",
+              "C:\ProgramData\chocolatey\bin\makensis.exe"
+            )
+            $makensis = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           }
+
+          if (-not $makensis) {
+            Write-Error "makensis.exe was not found after NSIS installation."
+            exit 1
+          }
+
+          Write-Host "Using makensis: $makensis"
           $distPath = (Get-Item "dist").FullName
           $dirs = Get-ChildItem -Path $distPath -Directory
           if ($dirs.Count -eq 0) {
