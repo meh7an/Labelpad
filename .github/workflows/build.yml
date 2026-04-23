@@ -69,17 +69,28 @@ jobs:
           Get-ChildItem -Recurse dist\ | Select-Object FullName | Format-Table -AutoSize
 
       - name: Install NSIS
-        run: choco install nsis --yes --no-progress
+        run: |
+          choco install nsis --yes --no-progress
+          # Force the path into the runner's environment for the NEXT steps
+          echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Create output directory
         run: New-Item -ItemType Directory -Force -Path installer_output
 
       - name: Build installer with NSIS
         run: |
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
           if (-not (Test-Path $makensis)) {
             $makensis = "C:\Program Files\NSIS\makensis.exe"
           }
+
+          if (-not $makensis) {
+            Write-Error "makensis.exe was not found. Current Path: $env:Path"
+            exit 1
+          }
+
+          Write-Host "Using makensis: $makensis"
           $distPath = (Get-Item "dist").FullName
           $dirs = Get-ChildItem -Path $distPath -Directory
           if ($dirs.Count -eq 0) {
