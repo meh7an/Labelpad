@@ -20,11 +20,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Pillow system dependencies
+      - name: Install Pillow and Qt system dependencies
         run: |
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends \
-            libjpeg-dev zlib1g-dev libpng-dev
+            libjpeg-dev zlib1g-dev libpng-dev \
+            libgl1 libglib2.0-0 libdbus-1-3
 
       - name: Install Python dependencies
         run: |
@@ -32,6 +33,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -v --tb=short
 
   # ─────────────────────────────────────────────

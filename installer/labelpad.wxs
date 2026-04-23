@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   installer/labelpad.wxs
-  WiX Toolset source file -- produces Labelpad.msi
+  WiX Toolset v4 source file — produces Labelpad.msi
   Wraps the PyInstaller dist/Labelpad/ folder into a proper Windows MSI.
   Built by GitHub Actions (see .github/workflows/build.yml).
 -->
@@ -36,14 +36,15 @@
     <StandardDirectory Id="DesktopFolder" />
 
     <!-- ----------------------------------------------------------------
-         Main feature: all PyInstaller output files
+         Main feature: all PyInstaller output files + associations
          The harvest tool (wix harvest) auto-generates the file list
-         from dist/Labelpad/ -- see build.yml for how this is invoked.
+         from dist/Labelpad/ — see build.yml for how this is invoked.
     ---------------------------------------------------------------- -->
     <Feature Id="MainFeature" Title="Labelpad" Level="1">
       <ComponentGroupRef Id="LabelpadFiles" />
       <ComponentRef Id="ApplicationShortcutStartMenu" />
       <ComponentRef Id="ApplicationShortcutDesktop" />
+      <ComponentRef Id="DcmPackFileAssociation" />
     </Feature>
 
     <!-- ----------------------------------------------------------------
@@ -83,6 +84,74 @@
                      Name="DesktopInstalled"
                      Type="integer" Value="1"
                      KeyPath="yes" />
+    </Component>
+
+    <!-- ----------------------------------------------------------------
+         File association: .dcmpack → Labelpad
+
+         Maps the .dcmpack extension to the Labelpad.dcmpack ProgId and
+         writes the shell open command so double-clicking a pack launches:
+             Labelpad.exe "path\to\file.dcmpack"
+
+         The KeyPath registry value lives in HKCU (per-user) so WiX can
+         track the component without requiring HKCR write access at repair
+         time. The HKCR writes themselves require the perMachine scope
+         (admin) already declared on the Package element above.
+
+         On uninstall, WiX removes all RegistryValue elements whose
+         component is being uninstalled, which cleanly reverses the
+         registration without needing a custom action.
+    ---------------------------------------------------------------- -->
+    <Component Id="DcmPackFileAssociation"
+               Directory="INSTALLFOLDER"
+               Guid="C3D4E5F6-A7B8-9012-CDEF-123456789012">
+
+      <!-- Component key path — stored in HKCU so WiX can track it -->
+      <RegistryValue Root="HKCU"
+                     Key="Software\Labelpad"
+                     Name="DcmPackAssocInstalled"
+                     Type="integer" Value="1"
+                     KeyPath="yes" />
+
+      <!-- .dcmpack extension → ProgId -->
+      <RegistryValue Root="HKCR"
+                     Key=".dcmpack"
+                     Type="string"
+                     Value="Labelpad.dcmpack" />
+      <RegistryValue Root="HKCR"
+                     Key=".dcmpack"
+                     Name="Content Type"
+                     Type="string"
+                     Value="application/x-dcmpack" />
+
+      <!-- ProgId: description -->
+      <RegistryValue Root="HKCR"
+                     Key="Labelpad.dcmpack"
+                     Type="string"
+                     Value="Labelpad DICOM Pack" />
+
+      <!-- ProgId: icon (index 0 = first icon resource in the exe) -->
+      <RegistryValue Root="HKCR"
+                     Key="Labelpad.dcmpack\DefaultIcon"
+                     Type="string"
+                     Value="[INSTALLFOLDER]Labelpad.exe,0" />
+
+      <!-- Shell verb: default action -->
+      <RegistryValue Root="HKCR"
+                     Key="Labelpad.dcmpack\shell"
+                     Type="string"
+                     Value="open" />
+      <RegistryValue Root="HKCR"
+                     Key="Labelpad.dcmpack\shell\open"
+                     Type="string"
+                     Value="Open with Labelpad" />
+
+      <!-- Shell open command: passes the file path as the first argument -->
+      <RegistryValue Root="HKCR"
+                     Key="Labelpad.dcmpack\shell\open\command"
+                     Type="string"
+                     Value="&quot;[INSTALLFOLDER]Labelpad.exe&quot; &quot;%1&quot;" />
+
     </Component>
 
   </Package>

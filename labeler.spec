@@ -243,7 +243,40 @@ if IS_MAC:
         icon="assets/icon.icns",
         bundle_identifier="com.labelpad.app",
         info_plist={
-            "NSHighResolutionCapable": True,
+            "NSHighResolutionCapable":    True,
             "CFBundleShortVersionString": "1.0.0",
+
+            # ---------------------------------------------------------------------------
+            # File association: declare that Labelpad opens .dcmpack files.
+            # LSHandlerRank "Owner" gives Labelpad priority over any other
+            # app that might claim the same extension.
+            # ---------------------------------------------------------------------------
+            "CFBundleDocumentTypes": [
+                {
+                    "CFBundleTypeName":       "Labelpad DICOM Pack",
+                    "CFBundleTypeRole":       "Editor",
+                    "CFBundleTypeExtensions": ["dcmpack"],
+                    "CFBundleTypeIconFile":   "icon.icns",
+                    "LSItemContentTypes":     ["com.labelpad.dcmpack"],
+                    "LSHandlerRank":          "Owner",
+                }
+            ],
+
+            # ---------------------------------------------------------------------------
+            # UTI export: register com.labelpad.dcmpack as a known type so
+            # Spotlight, Quick Look, and other apps can identify the format.
+            # Conforms to public.data (arbitrary bytes) and public.archive
+            # (container of other files — accurate for a ZIP-based format).
+            # ---------------------------------------------------------------------------
+            "UTExportedTypeDeclarations": [
+                {
+                    "UTTypeIdentifier":  "com.labelpad.dcmpack",
+                    "UTTypeDescription": "Labelpad DICOM Pack",
+                    "UTTypeConformsTo":  ["public.data", "public.archive"],
+                    "UTTypeTagSpecification": {
+                        "public.filename-extension": ["dcmpack"],
+                    },
+                }
+            ],
         },
     )

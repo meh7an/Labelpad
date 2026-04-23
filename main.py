@@ -25,6 +25,8 @@ if "--_labelme_subprocess" in sys.argv:
 import logging
 from pathlib import Path
 
+from PyQt5.QtCore import QEvent, QTimer
+from PyQt5.QtGui import QFileOpenEvent
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 
@@ -97,6 +99,45 @@ def _resolve_icon():
 
 
 # ---------------------------------------------------------------------------
+# Custom QApplication — file-open event routing (M5)
+# ---------------------------------------------------------------------------
+
+class LabelpadApp(QApplication):
+    """
+    QApplication subclass that intercepts QFileOpenEvent on macOS.
+
+    macOS delivers .dcmpack open requests via QFileOpenEvent rather than
+    sys.argv when the user double-clicks a file or drops it onto the dock
+    icon. Events that arrive before the window is ready are queued and
+    replayed via QTimer.singleShot once set_main_window() is called.
+    """
+
+    def __init__(self, argv: list) -> None:
+        super().__init__(argv)
+        self._pending_pack = None   # Path | None
+        self._main_window  = None   # MainWindow | None
+
+    def set_main_window(self, window) -> None:
+        """Register the window and flush any queued file-open path."""
+        self._main_window = window
+        if self._pending_pack is not None:
+            path               = self._pending_pack
+            self._pending_pack = None
+            QTimer.singleShot(0, lambda: self._main_window._open_pack_from_path(path))
+
+    def event(self, e: QEvent) -> bool:
+        if e.type() == QEvent.FileOpen:
+            path = Path(QFileOpenEvent(e).file())
+            if path.suffix.lower() == ".dcmpack":
+                if self._main_window is not None:
+                    self._main_window._open_pack_from_path(path)
+                else:
+                    self._pending_pack = path
+            return True
+        return super().event(e)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -107,7 +148,7 @@ def main():
     bootstrap()
     logging.info("Data root: %s", DATA_ROOT)
 
-    app = QApplication(sys.argv)
+    app = LabelpadApp(sys.argv)
     app.setApplicationName("Labelpad")
     app.setOrganizationName("Labelpad")
     from PyQt5.QtGui import QFontDatabase, QFont, QPalette, QColor
@@ -181,6 +222,18 @@ def main():
         _apply_icon(window, app_icon)
         _apply_dark_titlebar(window)
         install_exception_hook(lambda: window)
+
+        # Register window for QFileOpenEvent routing and pending-path flush.
+        app.set_main_window(window)
+
+        # Windows association / macOS terminal cold-start: the OS passes the
+        # .dcmpack path as sys.argv[1]. QTimer defers the dialog until the
+        # event loop is running so the window is fully painted first.
+        if len(sys.argv) > 1:
+            _pack_path = Path(sys.argv[1])
+            if _pack_path.suffix.lower() == ".dcmpack" and _pack_path.exists():
+                QTimer.singleShot(0, lambda: window._open_pack_from_path(_pack_path))
+
         return app.exec_()
     except Exception as exc:
         logging.critical("Fatal error during startup: %s", exc, exc_info=True)
