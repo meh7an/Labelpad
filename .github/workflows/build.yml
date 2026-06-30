@@ -127,10 +127,18 @@ jobs:
   # macOS: DMG installer + PKG installer
   # ─────────────────────────────────────────────
   build-macos:
-    runs-on: macos-latest
     needs: test
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: arm64
+          - runner: macos-15-intel
+            arch: intel
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -174,7 +182,7 @@ jobs:
             -srcfolder "$APP_PATH" \
             -ov \
             -format UDZO \
-            "installer_output/Labelpad_${VERSION}_mac.dmg"
+            "installer_output/Labelpad_${VERSION}_mac_${{ matrix.arch }}.dmg"
 
       - name: Build PKG installer
         run: |
@@ -185,13 +193,13 @@ jobs:
             --install-location /Applications \
             --identifier "com.labelpad.app" \
             --version "${VERSION}" \
-            "installer_output/Labelpad_${VERSION}_mac.pkg"
+            "installer_output/Labelpad_${VERSION}_mac_${{ matrix.arch }}.pkg"
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            installer_output/Labelpad_${{ github.ref_name }}_mac.dmg
-            installer_output/Labelpad_${{ github.ref_name }}_mac.pkg
+            installer_output/Labelpad_${{ github.ref_name }}_mac_${{ matrix.arch }}.dmg
+            installer_output/Labelpad_${{ github.ref_name }}_mac_${{ matrix.arch }}.pkg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
