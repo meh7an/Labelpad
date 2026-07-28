@@ -35,7 +35,14 @@ from core.dcmpack import (
     extract_pack,
 )
 from core.dicom_handler import DicomReadError, load_dicom
-from core.updater import UpdateCancelledError, check_for_update, download_asset
+from core.updater import (
+    UpdateCancelledError,
+    UpdateError,
+    check_for_update,
+    download_asset,
+    extract_payload,
+    verify_zip,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -202,25 +209,34 @@ class UpdateCheckWorker(QObject):
 
 class UpdateDownloadWorker(QObject):
     """
-    Stream an update payload to disk off the main thread.
+    Download, verify, and extract an update payload off the main thread.
+
+    Verification and extraction take seconds on a large payload, so they run
+    here rather than on the UI thread. Progress is throttled to whole-percent
+    changes: a modal QProgressDialog processes events inside setValue(), and
+    an unthrottled per-chunk stream recurses those nested event loops deep
+    enough to hang and crash the app.
 
     Signals:
-        progress(done, total): bytes downloaded so far / expected total.
-        finished(Path):        path of the completed zip.
+        progress(done, total): bytes downloaded; at most one emit per percent.
+        extracting():          download done, verify + extract starting.
+        ready(Path):           extracted payload ready for the swap helper.
         cancelled():           user cancelled; partial file removed.
-        failed(str):           any other error; partial file removed.
+        failed(str):           any error; partial file removed.
     """
 
-    progress  = pyqtSignal(int, int)   # (bytes_done, bytes_total)
-    finished  = pyqtSignal(object)     # Path
-    cancelled = pyqtSignal()
-    failed    = pyqtSignal(str)
+    progress   = pyqtSignal(int, int)   # (bytes_done, bytes_total)
+    extracting = pyqtSignal()
+    ready      = pyqtSignal(object)     # Path to extracted payload
+    cancelled  = pyqtSignal()
+    failed     = pyqtSignal(str)
 
     def __init__(self, url: str, dest: Path) -> None:
         super().__init__()
         self._url          = url
         self._dest         = dest
         self._cancel_event = threading.Event()
+        self._last_pct     = -1
 
     def cancel(self) -> None:
         """Abort after the chunk currently being written."""
@@ -228,11 +244,24 @@ class UpdateDownloadWorker(QObject):
 
     def run(self) -> None:
         try:
-            download_asset(self._url, self._dest, self.progress.emit, self._cancel_event)
-            self.finished.emit(self._dest)
+            download_asset(self._url, self._dest, self._emit_progress, self._cancel_event)
+            self.extracting.emit()
+            if not verify_zip(self._dest):
+                raise UpdateError("The downloaded update file is corrupted — try again later.")
+            payload = extract_payload(self._dest)
+            self.ready.emit(payload)
         except UpdateCancelledError:
             self._dest.unlink(missing_ok=True)
             self.cancelled.emit()
+        except UpdateError as exc:
+            self._dest.unlink(missing_ok=True)
+            self.failed.emit(str(exc))
         except Exception as exc:
             self._dest.unlink(missing_ok=True)
             self.failed.emit(f"Download failed: {exc}")
+
+    def _emit_progress(self, done: int, total: int) -> None:
+        pct = int(done * 100 / total) if total else 0
+        if pct != self._last_pct:
+            self._last_pct = pct
+            self.progress.emit(done, total)

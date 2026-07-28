@@ -60,23 +60,43 @@ class TestUpdateCheckWorker:
 
 
 class TestUpdateDownloadWorker:
-    def test_finished_with_dest_path(self, tmp_path, monkeypatch):
-        dest = tmp_path / "u.zip"
+    def test_ready_after_download_verify_extract(self, tmp_path, monkeypatch):
+        dest    = tmp_path / "u.zip"
+        payload = tmp_path / "payload"
 
         def fake_download(url, d, progress=None, cancel=None):
-            d.write_bytes(b"payload")
+            d.write_bytes(b"zipdata")
             if progress:
                 progress(7, 7)
 
         monkeypatch.setattr(workers, "download_asset", fake_download)
-        got, prog = [], []
+        monkeypatch.setattr(workers, "verify_zip", lambda p: True)
+        monkeypatch.setattr(workers, "extract_payload", lambda p: payload)
+        got, extracting = [], []
         w = workers.UpdateDownloadWorker("https://x", dest)
-        w.finished.connect(got.append)
-        w.progress.connect(lambda a, b: prog.append((a, b)))
+        w.ready.connect(got.append)
+        w.extracting.connect(lambda: extracting.append(True))
         w.run()
-        assert got == [dest]
-        assert prog == [(7, 7)]
-        assert dest.read_bytes() == b"payload"
+        assert got == [payload]
+        assert extracting == [True]
+
+    def test_corrupt_zip_fails_and_removes_file(self, tmp_path, monkeypatch):
+        dest = tmp_path / "u.zip"
+
+        def fake_download(url, d, progress=None, cancel=None):
+            d.write_bytes(b"not a zip")
+
+        monkeypatch.setattr(workers, "download_asset", fake_download)
+        monkeypatch.setattr(workers, "verify_zip", lambda p: False)
+        failures, ready = [], []
+        w = workers.UpdateDownloadWorker("https://x", dest)
+        w.failed.connect(failures.append)
+        w.ready.connect(ready.append)
+        w.run()
+        assert len(failures) == 1
+        assert "corrupted" in failures[0]
+        assert ready == []
+        assert not dest.exists()
 
     def test_cancelled_removes_partial_file(self, tmp_path, monkeypatch):
         dest = tmp_path / "u.zip"
@@ -108,6 +128,17 @@ class TestUpdateDownloadWorker:
         assert len(failures) == 1
         assert "connection reset" in failures[0]
         assert not dest.exists()
+
+    def test_progress_throttled_to_percent_changes(self, tmp_path):
+        received = []
+        w = workers.UpdateDownloadWorker("https://x", tmp_path / "u.zip")
+        w.progress.connect(lambda done, total: received.append(done))
+        w._emit_progress(1, 1000)      # 0% — first emission
+        w._emit_progress(5, 1000)      # still 0% — suppressed
+        w._emit_progress(500, 1000)    # 50%
+        w._emit_progress(505, 1000)    # still 50% — suppressed
+        w._emit_progress(1000, 1000)   # 100%
+        assert received == [1, 500, 1000]
 
     def test_cancel_sets_event(self):
         w = workers.UpdateDownloadWorker("https://x", Path("nowhere.zip"))

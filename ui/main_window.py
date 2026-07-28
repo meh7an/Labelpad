@@ -40,15 +40,12 @@ from core.paths import UNLABELED_DIR
 from core.purge import purge_dicom
 from core.updater import (
     RELEASE_PAGE_URL,
-    UpdateError,
     UpdateInfo,
     clean_stale_staging,
-    extract_payload,
     install_root,
     is_root_writable,
     launch_swap,
     staging_dir,
-    verify_zip,
 )
 from core.version import __version__
 from ui.detail_panel import DetailPanel
@@ -510,6 +507,8 @@ class MainWindow(QMainWindow):
         progress.setWindowTitle("Updating")
         progress.setMinimumWidth(400)
         progress.setWindowModality(Qt.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
         progress.show()
 
         self._update_dl        = UpdateDownloadWorker(info.asset_url, dest)
@@ -520,36 +519,39 @@ class MainWindow(QMainWindow):
         self._update_dl.progress.connect(
             lambda done, total: progress.setValue(int(done * 100 / total)) if total else None
         )
-        self._update_dl.finished.connect(
-            lambda p: self._on_update_downloaded(p, root, progress)
+        self._update_dl.extracting.connect(lambda: self._on_update_extracting(progress))
+        self._update_dl.ready.connect(
+            lambda payload: self._on_update_ready(payload, root, progress)
         )
         self._update_dl.failed.connect(lambda msg: self._on_update_dl_failed(msg, progress))
         self._update_dl.cancelled.connect(lambda: self._on_update_dl_cancelled(progress))
-        self._update_dl.finished.connect(self._update_dl_thread.quit)
+        self._update_dl.ready.connect(self._update_dl_thread.quit)
         self._update_dl.failed.connect(self._update_dl_thread.quit)
         self._update_dl.cancelled.connect(self._update_dl_thread.quit)
         self._update_dl_thread.finished.connect(self._update_dl_thread.deleteLater)
         self._update_dl_thread.start()
 
-    def _on_update_downloaded(self, zip_path: Path, root: Path, progress) -> None:
+    def _on_update_extracting(self, progress) -> None:
+        # Indeterminate busy state; cancelling is no longer possible once the
+        # payload is fully downloaded.
+        progress.setCancelButton(None)
+        progress.setRange(0, 0)
+        progress.setLabelText("Extracting update…")
+
+    def _on_update_ready(self, payload: Path, root: Path, progress) -> None:
         progress.close()
-        self._update_dl_thread = None
-        self._status_bar.showMessage("Preparing update...")
+        self._update_timer.stop()
         try:
-            if not verify_zip(zip_path):
-                raise UpdateError("The downloaded update file is corrupted — try again later.")
-            payload = extract_payload(zip_path)
             launch_swap(payload, root)
-        except UpdateError as exc:
-            self._update_btn.setEnabled(True)
-            self._status_bar.showMessage("Update failed.")
-            AppDialog.error(self, "Update Failed", str(exc))
-            return
         except Exception as exc:
             self._update_btn.setEnabled(True)
             self._status_bar.showMessage("Update failed.")
-            AppDialog.error(self, "Update Failed", f"Could not prepare the update.\n\n{exc}")
+            AppDialog.error(self, "Update Failed", f"Could not start the update helper.\n\n{exc}")
             return
+        if self._update_dl_thread is not None:
+            self._update_dl_thread.quit()
+            self._update_dl_thread.wait(3000)
+            self._update_dl_thread = None
         log.info("Swap helper running — restarting to apply the update.")
         QApplication.quit()
 
