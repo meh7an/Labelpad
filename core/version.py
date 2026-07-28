@@ -7,4 +7,4 @@ not equal "v" + __version__ (see .github/workflows/build.yml), so the shipped
 artifacts can never disagree with what the app believes it is running.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
