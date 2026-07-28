@@ -39,6 +39,7 @@ class FilePanelWidget(QWidget):
     open_viewer_requested  = pyqtSignal(Path)
     move_paths_requested   = pyqtSignal(list, object)   # (paths, folder_id | None)
     cut_paths_requested    = pyqtSignal(list)            # paths
+    delete_paths_requested = pyqtSignal(list)            # paths (all unassigned)
 
     def __init__(
         self,
@@ -408,6 +409,12 @@ class FilePanelWidget(QWidget):
             lbl = f"Remove {na} items from Folder" if na > 1 else "Remove from Folder"
             menu.addAction(f"{lbl}  Del").triggered.connect(
                 lambda: self.move_paths_requested.emit(assigned, None)
+            )
+        else:
+            menu.addSeparator()
+            lbl = f"Delete {n} Files Permanently" if n > 1 else "Delete File Permanently"
+            menu.addAction(f"{lbl}\tShift+Del").triggered.connect(
+                lambda: self.delete_paths_requested.emit(paths)
             )
 
         if self._cut_stems:

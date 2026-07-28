@@ -37,6 +37,7 @@ from core.dcmpack import (
 )
 from core.folder_store import FolderStore
 from core.paths import UNLABELED_DIR
+from core.purge import purge_dicom
 from ui.detail_panel import DetailPanel
 from ui.dicom_viewer import DicomViewer
 from ui.error_dialog import AppDialog
@@ -84,6 +85,7 @@ class MainWindow(QMainWindow):
         self._file_panel.open_viewer_requested.connect(self._open_viewer)
         self._file_panel.move_paths_requested.connect(self._cmd_move_paths_to_folder)
         self._file_panel.cut_paths_requested.connect(self._cmd_cut_paths)
+        self._file_panel.delete_paths_requested.connect(self._cmd_delete_paths)
         self._file_panel.bind_folder_actions(
             on_rename=self._cmd_rename_folder,
             on_export=self._cmd_export_folder,
@@ -232,6 +234,8 @@ class MainWindow(QMainWindow):
             "Ctrl+V":       self._cmd_paste,
             "Delete":       lambda: self._cmd_move_paths_to_folder(self._file_panel.selected_file_paths() or
                                     ([self._file_panel.current_file_path()] if self._file_panel.current_file_path() else []), None),
+            "Shift+Delete": lambda: self._cmd_delete_paths(self._file_panel.selected_file_paths() or
+                                    ([self._file_panel.current_file_path()] if self._file_panel.current_file_path() else [])),
             "Return":       lambda: self._open_viewer(p) if (p := self._file_panel.current_file_path()) else None,
             "Down":         self._file_panel.select_next,
             "Up":           self._file_panel.select_prev,
@@ -345,6 +349,54 @@ class MainWindow(QMainWindow):
             name = self._folder_store.get_folder(folder_id).name
             self._status_bar.showMessage(
                 f"Moved {len(stems)} file{'s' if len(stems) != 1 else ''} to \"{name}\"."
+            )
+
+    # ------------------------------------------------------------------
+    # Delete
+    # ------------------------------------------------------------------
+
+    def _cmd_delete_paths(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        if any(self._folder_store.folder_for_stem(p.stem) for p in paths):
+            self._status_bar.showMessage(
+                "Only unassigned files can be deleted — remove them from their folder first."
+            )
+            return
+
+        n      = len(paths)
+        target = f"{n} files" if n > 1 else f"\"{paths[0].name}\""
+        reply  = QMessageBox.question(
+            self, "Delete File Permanently",
+            f"Permanently delete {target}?\n\n"
+            "The DICOM, its annotations, raster export, and metadata will be "
+            "removed from disk. This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        deleted: set[str] = set()
+        failed:  list[str] = []
+        for p in paths:
+            try:
+                purge_dicom(p)
+                deleted.add(p.stem)
+            except OSError as exc:
+                failed.append(f"{p.name} — {exc}")
+
+        if deleted & self._file_panel.cut_stems:
+            self._file_panel.set_cut_stems(self._file_panel.cut_stems - deleted)
+            if not self._file_panel.cut_stems:
+                self._paste_btn.setVisible(False)
+        self._file_panel.scan()
+        self._detail_panel.refresh()
+
+        if failed:
+            AppDialog.error(self, "Delete Failed", "Could not delete:\n" + "\n".join(failed))
+        if deleted:
+            self._status_bar.showMessage(
+                f"Permanently deleted {len(deleted)} file{'s' if len(deleted) != 1 else ''}."
             )
 
     # ------------------------------------------------------------------

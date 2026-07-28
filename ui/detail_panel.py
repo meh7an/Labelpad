@@ -141,9 +141,22 @@ class DetailPanel(QWidget):
         self._open_btn.setEnabled(True)
         self._hint.setVisible(False)
 
+    def clear(self) -> None:
+        """Reset to the empty no-selection state."""
+        self._dcm_path = None
+        for lbl in self._rows.values():
+            lbl.setText("-")
+        self._rows["Status"].setStyleSheet("color: #D4D8DE; font-size: 11px;")
+        self._open_btn.setEnabled(False)
+        self._hint.setVisible(True)
+
     def refresh(self) -> None:
-        if self._dcm_path:
+        if not self._dcm_path:
+            return
+        if self._dcm_path.exists():
             self.load_file(self._dcm_path)
+        else:
+            self.clear()
 
     # ------------------------------------------------------------------
     # Slots
