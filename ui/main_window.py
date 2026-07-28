@@ -279,6 +279,7 @@ class MainWindow(QMainWindow):
             "Ctrl+E":       self._export_pack,
             "Ctrl+Shift+I": self._import_dcmpack,
             "Ctrl+N":       self._cmd_new_folder,
+            "Ctrl+F":       lambda: self._file_panel.focus_filter(),
             "Ctrl+X":       lambda: self._cmd_cut_paths(self._file_panel.selected_file_paths()),
             "Ctrl+V":       self._cmd_paste,
             "Delete":       lambda: self._cmd_move_paths_to_folder(self._file_panel.selected_file_paths() or

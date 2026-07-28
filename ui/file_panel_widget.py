@@ -12,6 +12,7 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -27,6 +28,18 @@ from ui.list_items import ROW_FILE, ROW_FOLDER, ROW_NO_FOLDER, make_list_item
 log = logging.getLogger(__name__)
 
 _UNLABELED_DIR = UNLABELED_DIR
+
+
+def stem_matches_filter(stem: str, query: str) -> bool:
+    """
+    Case-insensitive multi-token match: every whitespace-separated token in
+    the query must appear somewhere in the stem.
+    """
+    tokens = query.lower().split()
+    if not tokens:
+        return True
+    name = stem.lower()
+    return all(t in name for t in tokens)
 
 
 class FilePanelWidget(QWidget):
@@ -75,10 +88,16 @@ class FilePanelWidget(QWidget):
         except OSError:
             all_dcm = []
 
+        total = len(all_dcm)
+        query = self._filter_edit.text().strip()
+        if query:
+            all_dcm = [f for f in all_dcm if stem_matches_filter(f.stem, query)]
+
         if not all_dcm:
-            self._count_label.setText("0 files")
+            self._count_label.setText("0 files" if total == 0 else f"0 of {total} files")
             placeholder = QListWidgetItem(
                 "No files yet.\nImport DICOMs or a .dcmpack to get started."
+                if total == 0 else "No files match the filter."
             )
             placeholder.setFlags(Qt.NoItemFlags)
             placeholder.setForeground(QColor("#2E3A50"))
@@ -116,8 +135,11 @@ class FilePanelWidget(QWidget):
             self._list.setCurrentRow(restore_row)
 
         n = len(all_dcm)
-        self._count_label.setText(f"{n} file{'s' if n != 1 else ''}")
-        log.info("Scanned Unlabeled/ — %d file(s) found.", n)
+        if query:
+            self._count_label.setText(f"{n} of {total} files")
+        else:
+            self._count_label.setText(f"{n} file{'s' if n != 1 else ''}")
+        log.info("Scanned Unlabeled/ — %d file(s) shown of %d.", n, total)
 
     def refresh_item_status(self, dcm_path: Path) -> None:
         for i in range(self._list.count()):
@@ -169,6 +191,11 @@ class FilePanelWidget(QWidget):
                 self._list.setCurrentRow(i)
                 return
 
+    def focus_filter(self) -> None:
+        """Give keyboard focus to the filter box (Ctrl+F)."""
+        self._filter_edit.setFocus()
+        self._filter_edit.selectAll()
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
@@ -183,6 +210,7 @@ class FilePanelWidget(QWidget):
 
         layout.addWidget(self._build_panel_header())
         layout.addWidget(self._build_legend())
+        layout.addWidget(self._build_filter_row())
 
         self._list = QListWidget()
         self._list.setSpacing(2)
@@ -229,6 +257,24 @@ class FilePanelWidget(QWidget):
             layout.addWidget(lbl)
         layout.addStretch()
         return legend
+
+    def _build_filter_row(self) -> QWidget:
+        row = QWidget()
+        row.setStyleSheet("background-color: #0A0F1A; border-bottom: 1px solid #1E2A3A;")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(10, 6, 10, 6)
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Filter files...  (Ctrl+F)")
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.setFixedHeight(26)
+        self._filter_edit.setStyleSheet(
+            "QLineEdit { background: #0D1118; border: 1px solid #1E2A3A;"
+            "border-radius: 4px; color: #D4D8DE; font-size: 11px; padding: 0 8px; }"
+            "QLineEdit:focus { border-color: #2A7AD4; }"
+        )
+        self._filter_edit.textChanged.connect(lambda _t: self.scan())
+        layout.addWidget(self._filter_edit)
+        return row
 
     @staticmethod
     def _section_label(text: str) -> QLabel:
