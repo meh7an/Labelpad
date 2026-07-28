@@ -156,12 +156,40 @@ Releases are built automatically via GitHub Actions on every version tag push. T
 
 To trigger a release:
 
+1. Bump `__version__` in `core/version.py` (the single source of truth) and commit
+2. Tag with the matching `v`-prefixed version and push:
+
 ```bash
 git tag v1.0.0
-git push origin v1.0.0
+git push origin main v1.0.0
 ```
 
+CI verifies the tag equals `v` plus `core/version.py`'s `__version__` before any
+build starts and fails the release on a mismatch.
+
 Both artifacts are attached to the GitHub Release automatically.
+
+---
+
+## In-App Updates
+
+Labelpad checks GitHub Releases for a newer version shortly after launch and
+every hour afterwards (one anonymous API request; failures are silent). When
+an update exists, a green **Update** button appears in the header:
+
+1. One click downloads the payload for your platform with a progress dialog
+2. Labelpad restarts and a detached helper swaps the install in place,
+   keeping a backup that is restored automatically if anything fails
+3. The updated version relaunches — no installer wizard, no elevation
+
+This works because the Windows installer is per-user
+(`%LOCALAPPDATA%\Programs\Labelpad`) and update payloads are plain zips:
+
+- `Labelpad_vX.Y.Z_portable_win.zip` — Windows payload (doubles as the portable build)
+- `Labelpad_vX.Y.Z_mac_arm64_update.zip` / `Labelpad_vX.Y.Z_mac_intel_update.zip` — zipped `.app` per arch
+
+Installs that cannot be written without elevation (for example a legacy
+Program Files install) fall back to opening the release page in the browser.
 
 ---
 

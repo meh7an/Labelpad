@@ -7,9 +7,10 @@ import logging
 import shutil
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtCore import Qt, QThread, QTimer, QUrl
+from PyQt5.QtGui import QDesktopServices, QKeySequence
 from PyQt5.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -38,13 +39,31 @@ from core.dcmpack import (
 from core.folder_store import FolderStore
 from core.paths import UNLABELED_DIR
 from core.purge import purge_dicom
+from core.updater import (
+    RELEASE_PAGE_URL,
+    UpdateError,
+    UpdateInfo,
+    clean_stale_staging,
+    extract_payload,
+    install_root,
+    is_root_writable,
+    launch_swap,
+    staging_dir,
+    verify_zip,
+)
+from core.version import __version__
 from ui.detail_panel import DetailPanel
 from ui.dicom_viewer import DicomViewer
 from ui.error_dialog import AppDialog
 from ui.file_panel_widget import FilePanelWidget
 from ui.pack_info_dialog import show_pack_info
 from ui.password_dialog import ask_password
-from ui.workers import DicomLoader, PackExtractor
+from ui.workers import (
+    DicomLoader,
+    PackExtractor,
+    UpdateCheckWorker,
+    UpdateDownloadWorker,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,20 +74,32 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self._loader_thread:    QThread | None = None
-        self._extractor_thread: QThread | None = None
+        self._loader_thread:       QThread | None = None
+        self._extractor_thread:    QThread | None = None
+        self._update_check_thread: QThread | None = None
+        self._update_dl_thread:    QThread | None = None
+        self._pending_update:      UpdateInfo | None = None
         self._active_session = None
         self._folder_store   = FolderStore()
         self._build_ui()
         self._setup_shortcuts()
         self._file_panel.scan()
 
+        # In-app updating: clear leftovers from earlier attempts, then check
+        # shortly after launch and every hour afterwards.
+        clean_stale_staging()
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(3_600_000)
+        self._update_timer.timeout.connect(self._start_update_check)
+        self._update_timer.start()
+        QTimer.singleShot(5000, self._start_update_check)
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Labelpad")
+        self.setWindowTitle(f"Labelpad v{__version__}")
         self.setMinimumSize(1100, 700)
         self.resize(1280, 820)
 
@@ -126,7 +157,25 @@ class MainWindow(QMainWindow):
             "color: #2A7AD4; font-size: 17px; font-weight: 700; letter-spacing: 0.5px;"
         )
         layout.addWidget(app_name)
+
+        version_lbl = QLabel(f"v{__version__}")
+        version_lbl.setStyleSheet("color: #5A7FA8; font-size: 11px; margin-top: 6px;")
+        layout.addWidget(version_lbl)
         layout.addStretch()
+
+        self._update_btn = QPushButton("Update")
+        self._update_btn.setCursor(Qt.PointingHandCursor)
+        self._update_btn.setFixedHeight(30)
+        self._update_btn.setStyleSheet(
+            "QPushButton { background: #14301F; border: 1px solid #2E8050;"
+            "border-radius: 4px; color: #3ECF6E; font-size: 11px;"
+            "font-weight: 600; padding: 0 12px; }"
+            "QPushButton:hover { border-color: #3ECF6E; color: #D4FFE4; }"
+            "QPushButton:pressed { background: #0F2A1A; }"
+        )
+        self._update_btn.setVisible(False)
+        self._update_btn.clicked.connect(self._cmd_run_update)
+        layout.addWidget(self._update_btn)
 
         _sec = (
             "QPushButton { background: #1C2333; border: 1px solid #2E3A50;"
@@ -398,6 +447,128 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(
                 f"Permanently deleted {len(deleted)} file{'s' if len(deleted) != 1 else ''}."
             )
+
+    # ------------------------------------------------------------------
+    # In-app updating
+    # ------------------------------------------------------------------
+
+    def _start_update_check(self) -> None:
+        if self._update_check_thread is not None:
+            return
+        self._update_checker      = UpdateCheckWorker()
+        self._update_check_thread = QThread(self)
+        self._update_checker.moveToThread(self._update_check_thread)
+        self._update_check_thread.started.connect(self._update_checker.run)
+        self._update_checker.update_available.connect(self._on_update_available)
+        self._update_checker.finished.connect(self._on_update_check_done)
+        self._update_checker.finished.connect(self._update_check_thread.quit)
+        self._update_check_thread.finished.connect(self._update_check_thread.deleteLater)
+        self._update_check_thread.start()
+
+    def _on_update_available(self, info: UpdateInfo) -> None:
+        self._pending_update = info
+        self._update_btn.setText(f"Update to v{info.latest}")
+        self._update_btn.setToolTip(
+            f"{info.release_name} is available. One click updates and restarts Labelpad."
+        )
+        self._update_btn.setVisible(True)
+        log.info("Update available: v%s -> v%s.", info.current, info.latest)
+
+    def _on_update_check_done(self) -> None:
+        self._update_check_thread = None
+
+    def _cmd_run_update(self) -> None:
+        info = self._pending_update
+        if info is None:
+            return
+        root = install_root()
+        if root is None or not is_root_writable(root):
+            QDesktopServices.openUrl(QUrl(RELEASE_PAGE_URL))
+            self._status_bar.showMessage(
+                "This install cannot update itself — opened the release page instead."
+            )
+            return
+
+        notes = info.release_notes.strip()
+        if len(notes) > 400:
+            notes = notes[:400] + "..."
+        lines = [f"Update from v{info.current} to v{info.latest}?"]
+        if notes:
+            lines += ["", notes]
+        lines += ["", "Labelpad will download the update, then restart to apply it."]
+        reply = QMessageBox.question(
+            self, "Update Labelpad", "\n".join(lines),
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._run_update_download(info, root)
+
+    def _run_update_download(self, info: UpdateInfo, root: Path) -> None:
+        self._update_btn.setEnabled(False)
+        staging_dir().mkdir(parents=True, exist_ok=True)
+        dest = staging_dir() / info.asset_name
+
+        progress = QProgressDialog(
+            f"Downloading {info.asset_name}…", "Cancel", 0, 100, self,
+        )
+        progress.setWindowTitle("Updating")
+        progress.setMinimumWidth(400)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.show()
+
+        self._update_dl        = UpdateDownloadWorker(info.asset_url, dest)
+        self._update_dl_thread = QThread(self)
+        self._update_dl.moveToThread(self._update_dl_thread)
+        self._update_dl_thread.started.connect(self._update_dl.run)
+        progress.canceled.connect(lambda: self._update_dl.cancel())
+        self._update_dl.progress.connect(
+            lambda done, total: progress.setValue(int(done * 100 / total)) if total else None
+        )
+        self._update_dl.finished.connect(
+            lambda p: self._on_update_downloaded(p, root, progress)
+        )
+        self._update_dl.failed.connect(lambda msg: self._on_update_dl_failed(msg, progress))
+        self._update_dl.cancelled.connect(lambda: self._on_update_dl_cancelled(progress))
+        self._update_dl.finished.connect(self._update_dl_thread.quit)
+        self._update_dl.failed.connect(self._update_dl_thread.quit)
+        self._update_dl.cancelled.connect(self._update_dl_thread.quit)
+        self._update_dl_thread.finished.connect(self._update_dl_thread.deleteLater)
+        self._update_dl_thread.start()
+
+    def _on_update_downloaded(self, zip_path: Path, root: Path, progress) -> None:
+        progress.close()
+        self._update_dl_thread = None
+        self._status_bar.showMessage("Preparing update...")
+        try:
+            if not verify_zip(zip_path):
+                raise UpdateError("The downloaded update file is corrupted — try again later.")
+            payload = extract_payload(zip_path)
+            launch_swap(payload, root)
+        except UpdateError as exc:
+            self._update_btn.setEnabled(True)
+            self._status_bar.showMessage("Update failed.")
+            AppDialog.error(self, "Update Failed", str(exc))
+            return
+        except Exception as exc:
+            self._update_btn.setEnabled(True)
+            self._status_bar.showMessage("Update failed.")
+            AppDialog.error(self, "Update Failed", f"Could not prepare the update.\n\n{exc}")
+            return
+        log.info("Swap helper running — restarting to apply the update.")
+        QApplication.quit()
+
+    def _on_update_dl_failed(self, message: str, progress) -> None:
+        progress.close()
+        self._update_dl_thread = None
+        self._update_btn.setEnabled(True)
+        self._status_bar.showMessage("Update download failed — will retry on the next check.")
+        AppDialog.error(self, "Update Failed", message)
+
+    def _on_update_dl_cancelled(self, progress) -> None:
+        progress.close()
+        self._update_dl_thread = None
+        self._update_btn.setEnabled(True)
+        self._status_bar.showMessage("Update cancelled.")
 
     # ------------------------------------------------------------------
     # Import DICOMs

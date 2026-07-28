@@ -19,6 +19,25 @@ if "--_labelme_subprocess" in sys.argv:
     sys.exit(0)
 
 # ---------------------------------------------------------------------------
+# Hidden update-apply hook
+# Verifies and extracts a payload zip, then hands off to the detached swap
+# helper and exits. Used for end-to-end update testing; the in-app flow
+# calls the same functions directly.
+# Usage: Labelpad --apply-update <payload.zip> [install_root]
+# ---------------------------------------------------------------------------
+
+if "--apply-update" in sys.argv:
+    from pathlib import Path as _Path
+
+    from core.updater import apply_update_from_zip
+
+    _idx  = sys.argv.index("--apply-update")
+    _args = sys.argv[_idx + 1:_idx + 3]
+    _zip  = _Path(_args[0]) if _args else None
+    _root = _Path(_args[1]) if len(_args) > 1 else None
+    sys.exit(apply_update_from_zip(_zip, _root))
+
+# ---------------------------------------------------------------------------
 # Normal imports (only reached when not running as labelme subprocess)
 # ---------------------------------------------------------------------------
 

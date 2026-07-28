@@ -35,6 +35,7 @@ from core.dcmpack import (
     extract_pack,
 )
 from core.dicom_handler import DicomReadError, load_dicom
+from core.updater import UpdateCancelledError, check_for_update, download_asset
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +167,72 @@ class PackCreator(QObject):
         if self._cancel_event.is_set():
             raise DcmPackCancelledError("Export cancelled by user.")
         self.progress.emit(current, total)
+
+
+# ---------------------------------------------------------------------------
+# Update check
+# ---------------------------------------------------------------------------
+
+class UpdateCheckWorker(QObject):
+    """
+    Query the release feed off the main thread. Silent by design: failures
+    of any kind simply mean no update_available emission.
+
+    Signals:
+        update_available(UpdateInfo): a newer release with a matching asset.
+        finished():                   always emitted last.
+    """
+
+    update_available = pyqtSignal(object)   # UpdateInfo
+    finished         = pyqtSignal()
+
+    def run(self) -> None:
+        try:
+            info = check_for_update()
+        except Exception:
+            info = None
+        if info is not None:
+            self.update_available.emit(info)
+        self.finished.emit()
+
+
+# ---------------------------------------------------------------------------
+# Update download
+# ---------------------------------------------------------------------------
+
+class UpdateDownloadWorker(QObject):
+    """
+    Stream an update payload to disk off the main thread.
+
+    Signals:
+        progress(done, total): bytes downloaded so far / expected total.
+        finished(Path):        path of the completed zip.
+        cancelled():           user cancelled; partial file removed.
+        failed(str):           any other error; partial file removed.
+    """
+
+    progress  = pyqtSignal(int, int)   # (bytes_done, bytes_total)
+    finished  = pyqtSignal(object)     # Path
+    cancelled = pyqtSignal()
+    failed    = pyqtSignal(str)
+
+    def __init__(self, url: str, dest: Path) -> None:
+        super().__init__()
+        self._url          = url
+        self._dest         = dest
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """Abort after the chunk currently being written."""
+        self._cancel_event.set()
+
+    def run(self) -> None:
+        try:
+            download_asset(self._url, self._dest, self.progress.emit, self._cancel_event)
+            self.finished.emit(self._dest)
+        except UpdateCancelledError:
+            self._dest.unlink(missing_ok=True)
+            self.cancelled.emit()
+        except Exception as exc:
+            self._dest.unlink(missing_ok=True)
+            self.failed.emit(f"Download failed: {exc}")
