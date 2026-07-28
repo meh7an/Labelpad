@@ -17,7 +17,6 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QProgressDialog,
     QPushButton,
     QShortcut,
@@ -329,12 +328,12 @@ class MainWindow(QMainWindow):
             folder = self._folder_store.get_folder(folder_id)
         except Exception:
             return
-        reply = QMessageBox.question(
+        confirmed = AppDialog.question(
             self, "Delete Folder",
             f"Delete folder \"{folder.name}\"?\n\nFiles will not be deleted — they will become unassigned.",
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+            yes_text="Delete", default_yes=False,
         )
-        if reply == QMessageBox.Yes:
+        if confirmed:
             self._folder_store.delete_folder(folder_id)
             self._file_panel.scan()
             self._status_bar.showMessage(f"Deleted folder \"{folder.name}\".")
@@ -416,14 +415,14 @@ class MainWindow(QMainWindow):
 
         n      = len(paths)
         target = f"{n} files" if n > 1 else f"\"{paths[0].name}\""
-        reply  = QMessageBox.question(
+        confirmed = AppDialog.question(
             self, "Delete File Permanently",
             f"Permanently delete {target}?\n\n"
             "The DICOM, its annotations, raster export, and metadata will be "
             "removed from disk. This cannot be undone.",
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+            yes_text="Delete", default_yes=False,
         )
-        if reply != QMessageBox.Yes:
+        if not confirmed:
             return
 
         deleted: set[str] = set()
@@ -497,11 +496,7 @@ class MainWindow(QMainWindow):
         if notes:
             lines += ["", notes]
         lines += ["", "Labelpad will download the update, then restart to apply it."]
-        reply = QMessageBox.question(
-            self, "Update Labelpad", "\n".join(lines),
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Yes,
-        )
-        if reply == QMessageBox.Yes:
+        if AppDialog.question(self, "Update Labelpad", "\n".join(lines), yes_text="Update"):
             self._run_update_download(info, root)
 
     def _run_update_download(self, info: UpdateInfo, root: Path) -> None:

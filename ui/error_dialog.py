@@ -29,21 +29,24 @@ from PyQt5.QtWidgets import (
 # ---------------------------------------------------------------------------
 
 class Severity:
-    INFO    = "INFO"
-    WARNING = "WARNING"
-    ERROR   = "ERROR"
+    INFO     = "INFO"
+    WARNING  = "WARNING"
+    ERROR    = "ERROR"
+    QUESTION = "QUESTION"
 
 
 _SEVERITY_COLORS = {
-    Severity.INFO:    "#2A7AD4",
-    Severity.WARNING: "#C8922A",
-    Severity.ERROR:   "#A83040",
+    Severity.INFO:     "#2A7AD4",
+    Severity.WARNING:  "#C8922A",
+    Severity.ERROR:    "#A83040",
+    Severity.QUESTION: "#2A7AD4",
 }
 
 _SEVERITY_ICONS = {
-    Severity.INFO:    "ℹ",
-    Severity.WARNING: "⚠",
-    Severity.ERROR:   "✕",
+    Severity.INFO:     "ℹ",
+    Severity.WARNING:  "⚠",
+    Severity.ERROR:    "✕",
+    Severity.QUESTION: "?",
 }
 
 
@@ -68,10 +71,18 @@ class AppDialog(QDialog):
         message: str,
         severity: str = Severity.ERROR,
         detail: Optional[str] = None,
+        buttons: str = "ok",
+        yes_text: str = "Yes",
+        cancel_text: str = "Cancel",
+        default_yes: bool = True,
     ) -> None:
         super().__init__(parent)
-        self._detail = detail
-        self._severity = severity
+        self._detail      = detail
+        self._severity    = severity
+        self._buttons     = buttons
+        self._yes_text    = yes_text
+        self._cancel_text = cancel_text
+        self._default_yes = default_yes
         self._build_ui(title, message)
 
     # ------------------------------------------------------------------
@@ -106,6 +117,31 @@ class AppDialog(QDialog):
         message: str,
     ) -> None:
         cls(parent, title, message, severity=Severity.INFO).exec_()
+
+    @classmethod
+    def question(
+        cls,
+        parent: Optional[QWidget],
+        title: str,
+        message: str,
+        yes_text: str = "Yes",
+        cancel_text: str = "Cancel",
+        default_yes: bool = True,
+    ) -> bool:
+        """
+        Branded Yes/Cancel confirmation. Returns True when confirmed.
+        Set default_yes=False for destructive actions so Enter cannot
+        accidentally confirm them.
+        """
+        dlg = cls(
+            parent, title, message,
+            severity=Severity.QUESTION,
+            buttons="yes-cancel",
+            yes_text=yes_text,
+            cancel_text=cancel_text,
+            default_yes=default_yes,
+        )
+        return dlg.exec_() == QDialog.Accepted
 
     # ------------------------------------------------------------------
     # UI
@@ -185,12 +221,33 @@ class AppDialog(QDialog):
         # Button row
         btn_box = QHBoxLayout()
         btn_box.addStretch()
-        ok_btn = QPushButton("OK")
-        ok_btn.setObjectName("primaryButton")
-        ok_btn.setFixedSize(88, 34)
-        ok_btn.setCursor(Qt.PointingHandCursor)
-        ok_btn.clicked.connect(self.accept)
-        btn_box.addWidget(ok_btn)
+        if self._buttons == "yes-cancel":
+            cancel_btn = QPushButton(self._cancel_text)
+            cancel_btn.setObjectName("secondaryButton")
+            cancel_btn.setFixedHeight(34)
+            cancel_btn.setMinimumWidth(88)
+            cancel_btn.setCursor(Qt.PointingHandCursor)
+            cancel_btn.clicked.connect(self.reject)
+            btn_box.addWidget(cancel_btn)
+
+            yes_btn = QPushButton(self._yes_text)
+            yes_btn.setObjectName("primaryButton")
+            yes_btn.setFixedHeight(34)
+            yes_btn.setMinimumWidth(88)
+            yes_btn.setCursor(Qt.PointingHandCursor)
+            yes_btn.clicked.connect(self.accept)
+            btn_box.addWidget(yes_btn)
+
+            focused = yes_btn if self._default_yes else cancel_btn
+            focused.setDefault(True)
+            focused.setFocus()
+        else:
+            ok_btn = QPushButton("OK")
+            ok_btn.setObjectName("primaryButton")
+            ok_btn.setFixedSize(88, 34)
+            ok_btn.setCursor(Qt.PointingHandCursor)
+            ok_btn.clicked.connect(self.accept)
+            btn_box.addWidget(ok_btn)
         body.addLayout(btn_box)
 
         root.addLayout(body)
